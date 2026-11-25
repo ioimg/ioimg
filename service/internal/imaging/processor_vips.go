@@ -620,11 +620,33 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 	if o.WebPEncoder != nil && o.WebPEncoder.Compression != nil {
 		params.Effort = *o.WebPEncoder.Compression
 	}
+
 	out, _, err := img.Export(params)
 	if err != nil {
 		return nil, err
 	}
+	if o.DPI > 0 {
+		// Same post-encode metadata pass as the pure-Go path: libvips strips
+		// density when StripMetadata is on, and this keeps both backends
+		// byte-comparable on the metadata we promise.
+		out = setDPI(out, formatName(format), o.DPI)
+	}
 	return out, nil
+}
+
+// formatName maps a vips image type to the string setDPI understands.
+func formatName(t vips.ImageType) string {
+	switch t {
+	case vips.ImageTypePNG:
+		return "png"
+	case vips.ImageTypeWEBP:
+		return "webp"
+	case vips.ImageTypeAVIF:
+		return "avif"
+	case vips.ImageTypeGIF:
+		return "gif"
+	}
+	return "jpeg"
 }
 
 // fitBytesVips mirrors fitBytes: highest quality that fits the mb_ budget, and

@@ -1,8 +1,10 @@
 package ops
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -240,4 +242,64 @@ func parseBoolArg(v string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("must be 0 or 1")
+}
+
+// Hashsum is imgproxy's hs_ verification: the source must hash to exactly this
+// value or the request fails with 422. Only hex digests are accepted, so a URL
+// cannot smuggle a pattern.
+type Hashsum struct {
+	Type string // "", md5, sha1, sha256, sha512
+	Hex  string
+}
+
+// IsZero reports whether no verification was requested.
+func (h Hashsum) IsZero() bool { return h.Type == "" || h.Hex == "" }
+
+func (h Hashsum) canonical() string { return h.Type + ":" + h.Hex }
+
+var hashsumHexLen = map[string]int{
+	"md5":    32,
+	"sha1":   40,
+	"sha256": 64,
+	"sha512": 128,
+}
+
+func parseHashsum(v string) (Hashsum, error) {
+	h := Hashsum{}
+	parts := strings.SplitN(v, ":", 2)
+	if len(parts) != 2 {
+		return h, fmt.Errorf("hs takes hashsum_type:hashsum")
+	}
+	kind := strings.ToLower(strings.TrimSpace(parts[0]))
+	if kind == "none" || kind == "" {
+		return Hashsum{}, nil
+	}
+	want, ok := hashsumHexLen[kind]
+	if !ok {
+		return h, fmt.Errorf("hs hashsum_type must be none|md5|sha1|sha256|sha512")
+	}
+	sum := strings.ToLower(strings.TrimSpace(parts[1]))
+	if len(sum) != want {
+		return h, fmt.Errorf("hs %s hashsum must be %d hex characters", kind, want)
+	}
+	for i := 0; i < len(sum); i++ {
+		c := sum[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return h, fmt.Errorf("hs hashsum must be hex")
+		}
+	}
+	return Hashsum{Type: kind, Hex: sum}, nil
+}
+
+// DecodeFallbackURL decodes imgproxy's URL-safe base64 fiu_ argument.
+func DecodeFallbackURL(v string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(v, "="))
+	if err != nil {
+		return "", fmt.Errorf("fiu must be URL-safe base64")
+	}
+	u, err := url.Parse(string(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("fiu must encode an absolute http(s) URL")
+	}
+	return u.String(), nil
 }

@@ -437,6 +437,9 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Set("X-IOIMG-Cache", state)
 	if res.timings != nil {
+		if _, ok := res.timings["fallback"]; ok {
+			h.Set("X-IOIMG-Fallback", "1")
+		}
 		h.Set("Server-Timing", serverTiming(res.timings))
 		h.Set("X-IOIMG-Transform-Ms", strconv.FormatFloat(res.timings["total"], 'f', 2, 64))
 	}
@@ -450,23 +453,63 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 
 	fetchStart := time.Now()
 	src, err := s.fetcher.Fetch(ctx, t.Source)
+	usedFallback := false
 	if err != nil {
-		return nil, timings, mapSourceError(err)
+		// fiu_: a per-request fallback image is served when the source cannot be
+		// fetched. It is fetched through the same SSRF-guarded fetcher, so a
+		// fallback URL cannot reach anything the source could not.
+		if t.Ops.FallbackURL == "" {
+			return nil, timings, mapSourceError(err)
+		}
+		s.metrics.Fallback.Add(1)
+		fallback, ferr := s.fetcher.Fetch(ctx, t.Ops.FallbackURL)
+		if ferr != nil {
+			s.log.Warn("fallback fetch failed", "error", ferr, "source_error", err)
+			return nil, timings, mapSourceError(err)
+		}
+		src, usedFallback = fallback, true
 	}
 	s.metrics.FetchNs.Add(uint64(time.Since(fetchStart).Nanoseconds()))
 	s.metrics.BytesIn.Add(uint64(len(src.Body)))
 	timings["fetch"] = ms(fetchStart)
+	if usedFallback {
+		timings["fallback"] = 1
+	}
+
+	// hs_: verify the digest before spending CPU on a decode. A fallback image is
+	// not the source the hashsum was computed for, so it is not verified.
+	if !usedFallback && !t.Ops.Hashsum.IsZero() {
+		if !hashsumMatches(t.Ops.Hashsum, src.Body) {
+			return nil, timings, errHashsumMismatch()
+		}
+	}
 
 	procStart := time.Now()
 	res, err := s.proc.Process(src.Body, t.Ops, imaging.Options{OutFormat: format, Quality: t.Ops.Quality})
 	if err != nil {
-		if errors.Is(err, imaging.ErrDimension) {
-			return nil, timings, errDimension()
-		}
-		if errors.Is(err, imaging.ErrDecode) {
+		if usedFallback {
 			return nil, timings, errDecode()
 		}
-		return nil, timings, errInternal(err)
+		// A corrupt/undecodable source falls back to the fallback image too: the
+		// commercial products treat "no usable image" the same way.
+		if t.Ops.FallbackURL != "" && errors.Is(err, imaging.ErrDecode) {
+			src, ferr := s.fetcher.Fetch(ctx, t.Ops.FallbackURL)
+			if ferr == nil {
+				s.metrics.Fallback.Add(1)
+				usedFallback = true
+				timings["fallback"] = 1
+				res, err = s.proc.Process(src.Body, t.Ops, imaging.Options{OutFormat: format, Quality: t.Ops.Quality})
+			}
+		}
+		if err != nil {
+			if errors.Is(err, imaging.ErrDimension) {
+				return nil, timings, errDimension()
+			}
+			if errors.Is(err, imaging.ErrDecode) {
+				return nil, timings, errDecode()
+			}
+			return nil, timings, errInternal(err)
+		}
 	}
 	s.metrics.TransformNs.Add(uint64(time.Since(procStart).Nanoseconds()))
 	for k, v := range res.Timings {

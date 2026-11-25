@@ -141,6 +141,7 @@ Konsekuensinya untuk dokumen ini:
 | Object blurring (AI) | ⛔ | butuh model/worker |
 | Autoquality by file size | ✅ | `mb_<bytes>`: binary search `q` 20..q0, maks 5 probe, deterministik; tidak pernah gagal (kembalikan terkecil) |
 | Autoquality by DSSIM | ⛔ | butuh metrik DSSIM |
+| DPI metadata | ✅ | `dpi_<n>`: JFIF density (JPEG) / `pHYs` (PNG), Pro di imgproxy |
 | Automatic best format | 🟡 | `f_auto` memilih berdasarkan `Accept`, bukan rasio kompresi |
 
 ### 2.5 Keamanan
@@ -154,7 +155,7 @@ Konsekuensinya untuk dokumen ini:
 | Source file size restriction | ✅ | `IOIMG_SOURCE_MAX_BYTES` |
 | Animation frame restriction | ⛔ | decode animasi belum penuh |
 | Allowed source restriction | ✅ | allowlist + SSRF guard |
-| Source hashsum verification | ⛔ | parameter `hs_` + verifikasi |
+| Source hashsum verification | ✅ | `hs_type:hash` (md5/sha1/sha256/sha512), dibandingkan constant-time sebelum decode, 422 saat beda (Pro di imgproxy) |
 | URL expiration | ✅ | `exp` |
 | Response filename | ✅ | `fn_` → `Content-Disposition`; signed, tapi tidak masuk cache key |
 | Cache buster | ✅ | `cb_`; signed, tidak masuk cache key |
@@ -185,8 +186,8 @@ Konsekuensinya untuk dokumen ini:
 | --- | --- | --- |
 | Image info | 🟡 | `f_json` (format, dimensi, alpha, animasi, warna dominan) |
 | Presets | ✅ | `IOIMG_PRESETS`, `t_*` |
-| Fallback image | 🟡 | hanya redirect via `IOIMG_FALLBACK_REDIRECT`; belum serve fallback image |
-| Per-request fallback | ⛔ | parameter URL |
+| Fallback image | ✅ | `fiu_` per-request (base64url), dipakai saat fetch/decode gagal; redirect `IOIMG_FALLBACK_REDIRECT` tetap ada |
+| Per-request fallback | ✅ | `fiu_`: ikut cache key + signature, header respons `X-IOIMG-Fallback: 1` |
 | Skip processing | ⛔ | pass-through berdasarkan format sumber |
 | Raw file streaming | ⛔ | endpoint raw tanpa decode |
 | ETag | ✅ | kuat, berbasis cache key |

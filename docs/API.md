@@ -92,6 +92,9 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `dt` | duotone | `intensity:color1:color2` (0..1; hex 3/6 digit) | `0:000000:ffffff` | Intensitas 0 = mati. `color1` untuk area gelap, `color2` untuk area terang; alias `duotone`. Fitur **Pro** imgproxy |
 | `col` | colorize | `opacity:color:keep_alpha` (0..1; hex; 0/1) | `1:000:0` | Overlay warna rata. `keep_alpha_0` membuat hasil opak; `keep_alpha_1` mempertahankan alpha sumber. Alias `colorize`. Fitur **Pro** imgproxy |
 | `gr` | gradient | `opacity:color:direction:start:stop` (0..1; hex; `down`/`up`/`right`/`left` atau derajat; 0..1) | `1:000:down:0:1` | Overlay transparan→warna. `0` = atas transparan, `90` = kanan transparan (searah jarum jam). Opacity 0 = mati. Fitur **Pro** imgproxy |
+| `hs` | verifikasi hashsum sumber | `hashsum_type:hashsum` (`none`/`md5`/`sha1`/`sha256`/`sha512`) | `none` | Dibandingkan sebelum decode; tidak cocok → `422 hashsum_mismatch`. Fitur **Pro** imgproxy |
+| `fiu` | fallback image URL | URL-safe base64 dari URL absolut | — | Dipakai saat sumber gagal di-fetch atau tidak bisa di-decode; fallback ikut allowlist/SSRF guard. Respons diberi `X-IOIMG-Fallback: 1`. Fitur **Pro** imgproxy |
+| `dpi` | DPI metadata | angka > 0 (0 = tidak diubah) | `0` | Ditulis ke JFIF density (JPEG) atau `pHYs` (PNG) setelah encode; format lain tidak punya field density. Fitur **Pro** imgproxy |
 | `pngo` | opsi encoder PNG | `interlaced:quantize:quantization_colors` (0/1; 0/1; 2..256) | — | Semua argumen opsional (`pngo_1`, `pngo_::64`). Fitur **Pro** imgproxy |
 | `webpo` | opsi encoder WebP | `compression:smart_subsample:preset` (0..6; 0/1; 0..5) | — | `compression` = method libwebp / reduction effort libvips. Fitur **Pro** imgproxy |
 | `avifo` | opsi encoder AVIF | `subsample` (0=4:4:4, 1=4:2:2, 2=4:2:0) | — | Fitur **Pro** imgproxy |
@@ -114,6 +117,9 @@ diklaim:
 | `webpo` `compression` | ✅ (`libwebp` method 0..6) | ✅ (reduction effort 0..6) |
 | `webpo` `smart_subsample`, `preset` | tidak didukung | tidak didukung |
 | `avifo` `subsample` | ✅ (4:4:4 / 4:2:2 / 4:2:0) | tidak didukung (govips tidak meneruskan subsample AVIF) |
+| `dpi` | ✅ JPEG (`JFIF`) + PNG (`pHYs`) | ✅ (pass post-encode yang sama) |
+| `hs` | ✅ semua algoritma (constant-time compare) | ✅ (sama, sebelum decode) |
+| `fiu` | ✅ + SSRF guard + metrik `ioimg_fallback_total` | ✅ |
 
 `ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm`, `dt`, `col`, `gr`, `pngo`, `webpo`, `avifo` mengikuti penamaan imgproxy
 supaya migrasi tidak perlu menerjemahkan URL. Nilai default tidak pernah masuk

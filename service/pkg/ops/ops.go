@@ -6,6 +6,7 @@
 package ops
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -113,6 +114,15 @@ type Ops struct {
 	Colorize Colorize
 	// Gradient overlays a colour ramp (imgproxy Pro). Zero opacity = off.
 	Gradient Gradient
+	// DPI sets the density metadata of the encoded image (imgproxy dpi_). It
+	// never changes pixels, so it is part of the cache key only because the
+	// encoded bytes differ.
+	DPI float64
+	// Hashsum verifies the source digest before any decoding (imgproxy hs_).
+	Hashsum Hashsum
+	// FallbackURL is served (processed with the same ops) when the source cannot
+	// be fetched or decoded (imgproxy fiu_, URL-safe base64).
+	FallbackURL string
 	// Per-format encoder overrides (imgproxy Pro). Nil = encoder default, so
 	// the canonical form of URLs that do not use them is unchanged.
 	PNGEncoder  *PNGEncoder
@@ -372,6 +382,24 @@ func (o *Ops) set(key, value string) error {
 			return err
 		}
 		o.AVIFEncoder = &a
+	case "dpi":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 || f > 100000 {
+			return fmt.Errorf("dpi must be a number between 0 and 100000")
+		}
+		o.DPI = f
+	case "hs", "hashsum":
+		h, err := parseHashsum(value)
+		if err != nil {
+			return err
+		}
+		o.Hashsum = h
+	case "fiu", "fallback_image_url":
+		u, err := DecodeFallbackURL(value)
+		if err != nil {
+			return err
+		}
+		o.FallbackURL = u
 	case "col", "colorize":
 		c, err := parseColorize(value)
 		if err != nil {
@@ -648,6 +676,9 @@ func (o Ops) Canonical() string {
 	if o.Contrast != 0 {
 		add("con", strconv.Itoa(o.Contrast))
 	}
+	if o.DPI > 0 {
+		add("dpi", trimFloat(o.DPI))
+	}
 	if o.DPR != 1 {
 		add("dpr", trimFloat(o.DPR))
 	}
@@ -664,6 +695,12 @@ func (o Ops) Canonical() string {
 	add("g", string(o.Gravity))
 	if !o.Gradient.IsZero() {
 		add("gr", o.Gradient.canonical())
+	}
+	if !o.Hashsum.IsZero() {
+		add("hs", o.Hashsum.canonical())
+	}
+	if o.FallbackURL != "" {
+		add("fiu", base64.RawURLEncoding.EncodeToString([]byte(o.FallbackURL)))
 	}
 	if o.HeightAuto {
 		add("h", "auto")

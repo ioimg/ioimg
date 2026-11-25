@@ -56,6 +56,10 @@ func errDecode() *HTTPError {
 	return &HTTPError{Status: http.StatusUnprocessableEntity, Code: "decode_failed", Message: "source is not a supported or valid image"}
 }
 
+func errHashsumMismatch() *HTTPError {
+	return &HTTPError{Status: http.StatusUnprocessableEntity, Code: "hashsum_mismatch", Message: "source hashsum does not match hs_"}
+}
+
 func errDimension() *HTTPError {
 	return &HTTPError{Status: http.StatusUnprocessableEntity, Code: "dimension_limit_exceeded", Message: "image exceeds the 40 MP / 8192 px limit"}
 }

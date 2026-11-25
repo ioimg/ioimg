@@ -149,10 +149,20 @@ func encode(img image.Image, o ops.Ops, opts Options) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.DPI > 0 {
+		out = setDPI(out, string(format), o.DPI)
+	}
 	if o.MaxBytes <= 0 || !lossy(format) || len(out) <= o.MaxBytes {
 		return out, nil
 	}
-	return fitBytes(img, o, format, quality, out)
+	res, err := fitBytes(img, o, format, quality, out)
+	if err != nil {
+		return nil, err
+	}
+	if o.DPI > 0 {
+		res = setDPI(res, string(format), o.DPI)
+	}
+	return res, nil
 }
 
 // fitBytes finds the highest quality whose output fits the mb_ budget. It never

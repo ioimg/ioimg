@@ -1,6 +1,10 @@
 package ops
 
-import "testing"
+import (
+	"encoding/base64"
+	"strings"
+	"testing"
+)
 
 func TestParsePNGEncoder(t *testing.T) {
 	cases := []struct {
@@ -162,4 +166,85 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestParseHashsum(t *testing.T) {
+	sum := "a" + strings.Repeat("b", 63)
+	o, err := Parse("w_100,hs_sha256:"+sum, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Hashsum.Type != "sha256" || o.Hashsum.Hex != sum {
+		t.Fatalf("hashsum parsed as %+v", o.Hashsum)
+	}
+	if !contains(o.Canonical(), "hs_sha256:"+sum) {
+		t.Fatalf("canonical %q", o.Canonical())
+	}
+
+	// type none means "no verification" and must not change the canonical form.
+	o, err = Parse("w_100,hs_none::", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.Hashsum.IsZero() || contains(o.Canonical(), "hs_") {
+		t.Fatalf("hs_none leaked: %+v %q", o.Hashsum, o.Canonical())
+	}
+
+	for _, bad := range []string{"hs_sha256:abc", "hs_sha256:" + strings.Repeat("z", 64), "hs_crc32:abcd", "hs_md5"} {
+		if _, err := Parse("w_100,"+bad, nil); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
+}
+
+func TestParseFallbackURL(t *testing.T) {
+	target := "https://cdn.example.com/fallback.jpg?x=1"
+	enc := base64.RawURLEncoding.EncodeToString([]byte(target))
+	o, err := Parse("w_100,fiu_"+enc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.FallbackURL != target {
+		t.Fatalf("fallback %q, want %q", o.FallbackURL, target)
+	}
+	if !contains(o.Canonical(), "fiu_"+enc) {
+		t.Fatalf("canonical %q", o.Canonical())
+	}
+	// Round-trip: the canonical form must parse back to the same URL.
+	again, err := Parse("w_100,"+lastCanonical(o, "fiu"), nil)
+	if err != nil || again.FallbackURL != target {
+		t.Fatalf("round-trip: %v %q", err, again.FallbackURL)
+	}
+
+	for _, bad := range []string{"fiu_!!!", "fiu_aGVsbG8"} {
+		if _, err := Parse("w_100,"+bad, nil); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
+}
+
+func TestParseDPI(t *testing.T) {
+	o, err := Parse("w_100,dpi_144", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.DPI != 144 {
+		t.Fatalf("dpi = %v", o.DPI)
+	}
+	if !contains(o.Canonical(), "dpi_144") {
+		t.Fatalf("canonical %q", o.Canonical())
+	}
+	// dpi_0 means "leave metadata alone" and must not split the cache.
+	o, err = Parse("w_100,dpi_0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.DPI != 0 || contains(o.Canonical(), "dpi_") {
+		t.Fatalf("dpi_0 leaked: %+v %q", o.DPI, o.Canonical())
+	}
+	for _, bad := range []string{"dpi_-1", "dpi_abc", "dpi_100001"} {
+		if _, err := Parse("w_100,"+bad, nil); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
 }

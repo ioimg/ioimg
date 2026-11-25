@@ -4,6 +4,7 @@ package imaging
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 
 	"github.com/davidbyttow/govips/v2/vips"
@@ -66,6 +67,41 @@ func TestVipsPNGInterlaced(t *testing.T) {
 		}
 		if !bytes.HasPrefix(out, []byte("\x89PNG\r\n\x1a\n")) {
 			t.Fatalf("interlaced=%v: not a PNG", interlaced)
+		}
+	}
+}
+
+// TestVipsDPI pins that dpi_ reaches the encoded bytes through the shared
+// post-encode pass, for both PNG (pHYs) and JPEG (JFIF density).
+func TestVipsDPI(t *testing.T) {
+	ensureVips()
+	src := vipsSizedJPEG(t, 24, 16)
+	for _, format := range []string{"png", "jpeg"} {
+		o, err := ops.Parse("w_24,f_"+format+",dpi_144", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := DefaultProcessor().Process(src, o, Options{OutFormat: ops.Format(format), Quality: 80})
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		switch format {
+		case "png":
+			idx := bytes.Index(res.Data, []byte("pHYs"))
+			if idx < 0 {
+				t.Fatalf("png: no pHYs chunk")
+			}
+			ppm := binary.BigEndian.Uint32(res.Data[idx+4:])
+			if ppm < 5600 || ppm > 5750 {
+				t.Fatalf("png pHYs = %d px/m, want ~5669 (144 dpi)", ppm)
+			}
+		case "jpeg":
+			if len(res.Data) < 18 || res.Data[13] != 1 {
+				t.Fatalf("jpeg: units = %d, want 1", res.Data[13])
+			}
+			if got := binary.BigEndian.Uint16(res.Data[14:]); got != 144 {
+				t.Fatalf("jpeg density = %d, want 144", got)
+			}
 		}
 	}
 }
