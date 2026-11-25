@@ -14,11 +14,13 @@ https://acme.ioimg.dev/w_800,f_auto,q_auto/https://cdn.acme.com/hero.jpg
 
 `alpha` — desain selesai, **data plane M1 MVP sudah berjalan** di
 [`service/`](service/README.md) (Go): L1+L2 cache (S3/R2), purge CDN fan-out,
-warm/batch API, backend pure Go maupun libvips (`-tags vips`). Control plane,
-quota/billing, dan hardening produksi masih M2. Lihat [ROADMAP](docs/ROADMAP.md).
+warm/batch API, backend pure Go maupun libvips (`-tags vips`), dan
+**control plane multi-tenant** (SQLite, dashboard, signing endpoint, usage).
+Billing/payment provider dan hardening produksi masih M2. Lihat
+[ROADMAP](docs/ROADMAP.md).
 
 ```
-service/          # implementasi data plane (Go, net/http) — MVP
+service/          # data plane (Go, net/http) + control plane (SQLite) — MVP
 integrations/     # URL builder JS, loader Next.js, plugin WordPress
 poc/              # PoC Rust (riwayat): tokio vs io_uring, benchmark
 poc-go/           # PoC Go: Fiber + prefork + govips
@@ -69,7 +71,7 @@ Tes: `cd service && go test ./...`.
 | [poc-go/README.md](poc-go/README.md) | **PoC Go (Fiber + prefork)**: benchmark pembanding + temuan bahwa libvips 3–5× lebih menentukan daripada pilihan bahasa |
 | [docs/BENCH-GO-STARTERKIT.md](docs/BENCH-GO-STARTERKIT.md) | **Bench starterkit `kinstack`**: overhead middleware nyata (HIT −69%, p50 3,5×), penyebab per-lapisan, temuan 2 key Valkey/request, rekomendasi pemisahan data plane |
 | [integrations/README.md](integrations/README.md) | URL builder JS, loader Next.js, plugin WordPress |
-| [docs/adr/](docs/adr/) | Architecture Decision Records (0008: data plane Go; 0001/0007 historis) |
+| [docs/adr/](docs/adr/) | Architecture Decision Records (0008: data plane Go; 0009: control plane multi-tenant; 0001/0007 historis) |
 
 ## Ringkasan keputusan teknis
 
@@ -91,3 +93,16 @@ Tes: `cd service && go test ./...`.
 ## Lisensi
 
 TBD (kandidat: AGPL-3.0 untuk core self-host + lisensi komersial untuk fitur enterprise).
+
+### Mode multi-tenant
+
+```bash
+cd service
+docker compose -f compose.control.yml up --build
+# dashboard: http://localhost:8081 (token demo-bootstrap)
+```
+
+Atau lokal: `make run-control` lalu `IOIMG_CONTROL_URL=http://localhost:8081
+IOIMG_CONTROL_TOKEN=data make run`. Detail di
+[`service/README.md`](service/README.md#multi-tenant-control-plane) dan
+[ADR-0009](docs/adr/0009-control-plane.md).

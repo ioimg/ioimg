@@ -14,6 +14,7 @@ import (
 	"ioimg/internal/ops"
 	"ioimg/internal/purge"
 	"ioimg/internal/sign"
+	"ioimg/internal/tenant"
 )
 
 // requireAdmin enforces the purge/warm admin bearer token.
@@ -71,17 +72,25 @@ func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
 			deleted += n
 		}
 	}
+	project := ""
+	if s.allowProjectHeader {
+		project = r.Header.Get(s.projectHeader)
+	}
 	for _, raw := range body.URLs {
 		u, err := url.Parse(raw)
 		if err != nil {
 			continue
 		}
+		policy, ok := s.tenants.Resolve(u.Hostname(), project)
+		if !ok {
+			continue
+		}
 		fake := &http.Request{URL: &url.URL{Path: u.Path, RawQuery: u.RawQuery}, Header: http.Header{}}
-		t, err := parsePathTarget(fake, s.cfg)
+		t, err := parsePathTarget(fake, policy)
 		if err != nil {
 			continue
 		}
-		for _, key := range keysForAllFormats(s.version, t) {
+		for _, key := range keysForAllFormats(s.version, policy.ID, t) {
 			s.cache.Delete(key)
 			if s.l2 != nil {
 				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -140,9 +149,14 @@ func (s *Server) handleWarm(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, errInvalidOps("targets must contain 1..1000 entries"))
 		return
 	}
+	policy, perr := s.policyFor(r)
+	if perr != nil {
+		s.writeError(w, r, perr)
+		return
+	}
 	plans := make([]warmPlan, 0, len(body.Targets))
 	for _, t := range body.Targets {
-		plan, err := s.warmPlan(t.Source, t.Ops)
+		plan, err := s.warmPlan(policy, t.Source, t.Ops)
 		if err != nil {
 			s.writeError(w, r, asHTTPError(err))
 			return
@@ -173,13 +187,14 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type warmPlan struct {
-	target Target
-	format ops.Format
-	key    string
+	projectID string
+	target    Target
+	format    ops.Format
+	key       string
 }
 
-func (s *Server) warmPlan(source, rawOps string) (warmPlan, error) {
-	o, err := ops.Parse(rawOps, s.cfg.Presets)
+func (s *Server) warmPlan(policy *tenant.Policy, source, rawOps string) (warmPlan, error) {
+	o, err := ops.Parse(rawOps, policy.Presets)
 	if err != nil {
 		return warmPlan{}, errInvalidOps(err.Error())
 	}
@@ -188,7 +203,7 @@ func (s *Server) warmPlan(source, rawOps string) (warmPlan, error) {
 		return warmPlan{}, errInvalidSource()
 	}
 	if u, err := url.Parse(canonical); err == nil {
-		if !s.cfg.AllowedHost(u.Hostname()) {
+		if !policy.AllowedHost(u.Hostname()) {
 			return warmPlan{}, errNotAllowed(u.Hostname())
 		}
 	}
@@ -197,7 +212,7 @@ func (s *Server) warmPlan(source, rawOps string) (warmPlan, error) {
 		format = ops.Negotiate("", s.formats, false)
 	}
 	t := Target{Ops: o, Canonical: o.Canonical(), Source: canonical}
-	return warmPlan{target: t, format: format, key: cache.Key(config.CacheKeyVersion+"|"+s.version, t.Canonical, t.Source, string(format))}, nil
+	return warmPlan{projectID: policy.ID, target: t, format: format, key: cache.Key(config.CacheKeyVersion+"|"+s.version+"|"+policy.ID, t.Canonical, t.Source, string(format))}, nil
 }
 
 func (s *Server) runWarm(id string, plans []warmPlan) {
@@ -235,6 +250,7 @@ func (s *Server) runWarm(id string, plans []warmPlan) {
 			}
 			cancel()
 		}
+		s.countUsage(policyIDForPlan(p), int64(len(data)))
 		res.Status = "ok"
 		s.recordWarm(id, res)
 	}
@@ -246,6 +262,8 @@ func (s *Server) runWarm(id string, plans []warmPlan) {
 	})
 }
 
+func policyIDForPlan(p warmPlan) string { return p.projectID }
+
 func (s *Server) recordWarm(id string, res WarmResult) {
 	s.jobs.update(id, func(j *Job) {
 		j.Done++
@@ -256,14 +274,14 @@ func (s *Server) recordWarm(id string, res WarmResult) {
 	})
 }
 
-func keysForAllFormats(version string, t Target) []string {
+func keysForAllFormats(version, projectID string, t Target) []string {
 	formats := []ops.Format{ops.FormatAVIF, ops.FormatWebP, ops.FormatJPEG, ops.FormatPNG, ops.FormatGIF, ops.FormatJSON}
 	if t.Ops.Format != ops.FormatAuto {
 		formats = []ops.Format{t.Ops.Format}
 	}
 	keys := make([]string, 0, len(formats))
 	for _, f := range formats {
-		keys = append(keys, cache.Key(config.CacheKeyVersion+"|"+version, t.Canonical, t.Source, string(f)))
+		keys = append(keys, cache.Key(config.CacheKeyVersion+"|"+version+"|"+projectID, t.Canonical, t.Source, string(f)))
 	}
 	return keys
 }

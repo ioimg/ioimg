@@ -1,5 +1,10 @@
 # API — ioimg
 
+> **Implementasi:** data plane di `service/cmd/ioimg`; admin/control plane di
+> `service/cmd/ioimg-control` dengan endpoint project/signing-key/API-key/sign/
+> usage. Lihat [`service/README.md`](../service/README.md) dan
+> [ADR-0009](adr/0009-control-plane.md).
+
 Kontrak HTTP publik. Versi dokumen: 1.0.
 
 Base URL contoh:

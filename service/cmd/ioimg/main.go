@@ -59,6 +59,7 @@ func main() {
 		"allow_any_host", cfg.AllowAnyHost,
 		"cache_dir", cfg.CacheDir,
 		"cache_max_bytes", cfg.CacheMaxBytes,
+		"control_url", cfg.ControlURL,
 		"concurrency", cfg.Concurrency,
 	)
 

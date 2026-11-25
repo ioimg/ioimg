@@ -25,6 +25,7 @@ import (
 	"ioimg/internal/ops"
 	"ioimg/internal/purge"
 	"ioimg/internal/source"
+	"ioimg/internal/tenant"
 )
 
 // Server is the ioimg data plane.
@@ -46,6 +47,13 @@ type Server struct {
 	l2      cache.L2
 	purgers []purge.Purger
 	jobs    *jobStore
+
+	tenants            *tenant.Store
+	defaultPolicy      *tenant.Policy
+	control            *tenant.Client
+	projectHeader      string
+	allowProjectHeader bool
+	usage              *usage
 }
 
 // Options are the optional Server dependencies (mainly for tests).
@@ -78,7 +86,7 @@ func New(cfg config.Config, o Options) (*Server, error) {
 		fetcher = source.New(source.Options{
 			Timeout:      cfg.SourceTimeout,
 			MaxBytes:     cfg.SourceMaxBytes,
-			AllowHost:    cfg.AllowedHost,
+			AllowHost:    func(string) bool { return true },
 			AllowPrivate: cfg.AllowPrivate,
 			UserAgent:    cfg.SourceUserAgent,
 		})
@@ -131,6 +139,23 @@ func New(cfg config.Config, o Options) (*Server, error) {
 		s.purgers = buildPurgers(cfg.CDN)
 	}
 	s.jobs = newJobStore(100)
+	s.usage = newUsage()
+	s.projectHeader = cfg.ProjectHeader
+	s.allowProjectHeader = cfg.AllowProjectHeader
+	s.defaultPolicy = buildDefaultPolicy(cfg)
+	s.tenants = tenant.NewStore(s.defaultPolicy)
+	if cfg.ControlURL != "" {
+		s.tenants = tenant.NewStore(nil)
+		s.control = tenant.NewClient(cfg.ControlURL, cfg.ControlToken, cfg.ControlTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.ControlTimeout)
+		err := s.tenants.LoadOnce(ctx, s.control)
+		cancel()
+		if err != nil {
+			logger.Warn("initial control-plane snapshot failed; waiting for sync", "error", err)
+		}
+		go s.tenants.Run(context.Background(), s.control, cfg.ControlSync, logger)
+		go s.usageLoop(context.Background())
+	}
 
 	if cfg.DisableAVIF {
 		delete(s.formats, ops.FormatAVIF)
@@ -222,10 +247,22 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, err := parseTarget(r, s.cfg)
+	policy, perr := s.policyFor(r)
+	if perr != nil {
+		s.writeError(w, r, perr)
+		return
+	}
+	target, err := parseTarget(r, policy)
 	if err != nil {
 		s.writeError(w, r, asHTTPError(err))
 		return
+	}
+	if remaining := s.quotaRemaining(policy); remaining >= 0 {
+		w.Header().Set("X-IOIMG-Quota-Remaining", strconv.FormatInt(remaining, 10))
+		if remaining == 0 {
+			s.writeError(w, r, errQuotaExceeded())
+			return
+		}
 	}
 
 	format := target.Ops.Format
@@ -237,7 +274,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	if auto {
 		format = ops.Negotiate(r.Header.Get("Accept"), s.formats, false)
 	}
-	key := cache.Key(config.CacheKeyVersion+"|"+s.version, target.Canonical, target.Source, string(format))
+	key := cache.Key(config.CacheKeyVersion+"|"+s.version+"|"+policy.ID, target.Canonical, target.Source, string(format))
 	etag := `"` + key + `"`
 
 	h := w.Header()
@@ -246,7 +283,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	if auto {
 		h.Set("Vary", "Accept")
 	}
-	h.Set("Cache-Tag", cacheTag(target.Source))
+	h.Set("Cache-Tag", "project:"+policy.ID+","+cacheTag(target.Source))
 	if format == ops.FormatJSON {
 		h.Set("Cache-Control", "public, max-age=60")
 	} else {
@@ -327,6 +364,9 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res := v.(result)
+	if !res.hit {
+		s.countUsage(policy.ID, int64(len(res.data)))
+	}
 	state := "MISS"
 	if res.hit {
 		if res.l2 {
@@ -421,12 +461,15 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, he *HTTPErro
 	s.log.Warn("request failed", "code", he.Code, "status", he.Status, "path", r.URL.Path, "request_id", r.Header.Get("X-Request-Id"))
 
 	// Optional browser fallback: redirect to the original source.
-	if s.cfg.FallbackRedirect && he.Status >= 400 && strings.HasPrefix(r.Header.Get("Accept"), "image/") {
-		target, err := parseTarget(r, s.cfg)
-		if err == nil {
-			w.Header().Set("Cache-Control", "no-store")
-			http.Redirect(w, r, target.Source, http.StatusFound)
-			return
+	if he.Status >= 400 && strings.HasPrefix(r.Header.Get("Accept"), "image/") {
+		policy, _ := s.policyFor(r)
+		if policy != nil && policy.FallbackRedirect {
+			target, err := parseTarget(r, policy)
+			if err == nil {
+				w.Header().Set("Cache-Control", "no-store")
+				http.Redirect(w, r, target.Source, http.StatusFound)
+				return
+			}
 		}
 	}
 
@@ -591,4 +634,39 @@ func envInt(k string, d int) int {
 		}
 	}
 	return d
+}
+
+// policyFor resolves the tenant for a request. In env mode the default
+// policy is always returned; in control-plane mode an unknown host/project
+// is rejected instead of falling back to another tenant.
+func (s *Server) policyFor(r *http.Request) (*tenant.Policy, *HTTPError) {
+	project := ""
+	if s.allowProjectHeader {
+		project = r.Header.Get(s.projectHeader)
+	}
+	p, ok := s.tenants.Resolve(r.Host, project)
+	if !ok {
+		return nil, errProjectNotFound()
+	}
+	return p, nil
+}
+
+func buildDefaultPolicy(cfg config.Config) *tenant.Policy {
+	p := tenant.Project{
+		ID:               "default",
+		Name:             "default",
+		Domains:          nil,
+		Allowlist:        cfg.Allowlist,
+		AllowAnyHost:     cfg.AllowAnyHost,
+		Presets:          cfg.Presets,
+		SignedOnly:       cfg.SignedOnly,
+		FallbackRedirect: cfg.FallbackRedirect,
+	}
+	if cfg.Signing != nil {
+		p.ExpiryRequired = cfg.Signing.ExpiryRequired
+		for _, k := range cfg.Signing.Keys {
+			p.SigningKeys = append(p.SigningKeys, tenant.SigningKey{Kid: k.ID, Secret: string(k.Secret)})
+		}
+	}
+	return tenant.NewPolicy(p)
 }

@@ -12,3 +12,4 @@ Format ringkas: **Konteks → Keputusan → Konsekuensi → Alternatif yang dito
 | [0006](0006-infra-adapters.md) | Storage & CDN sebagai adaptor, `Vary` tidak diasumsikan | Accepted |
 | [0007](0007-axum-on-compio.md) | `axum` di atas `compio` (`cyper-axum`) sebagai fast path | Rejected by 0008 |
 | [0008](0008-go-data-plane.md) | Data plane Go (`net/http`), imaging pure Go + jalur libvips, cache disk L1 | Accepted |
+| [0009](0009-control-plane.md) | Control plane multi-tenant, snapshot pull, signing endpoint, dashboard | Accepted |

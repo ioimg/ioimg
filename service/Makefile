@@ -28,6 +28,12 @@ docker:
 docker-vips:
 	docker build -f Dockerfile.vips -t ioimg:vips .
 
+docker-control:
+	docker build -f Dockerfile.control -t ioimg-control:dev .
+
+run-control:
+	IOIMG_CONTROL_DB=./control.db IOIMG_BOOTSTRAP_TOKEN=boot IOIMG_CONTROL_TOKEN=data go run ./cmd/ioimg-control
+
 # Runs the vips-tagged test suite inside the build image (needs libvips).
 test-vips:
 	docker build --target build -f Dockerfile.vips -t ioimg:vipsbuild .

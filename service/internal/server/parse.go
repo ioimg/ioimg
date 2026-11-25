@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"ioimg/internal/config"
 	"ioimg/internal/ops"
 	"ioimg/internal/sign"
+	"ioimg/internal/tenant"
 )
 
 // Target is a fully parsed and normalised image request.
@@ -22,24 +22,24 @@ type Target struct {
 }
 
 // parseTarget accepts both path-based and query-based requests.
-func parseTarget(r *http.Request, c config.Config) (Target, error) {
+func parseTarget(r *http.Request, p *tenant.Policy) (Target, error) {
 	if r.URL.Path == "/img" {
-		return parseQueryTarget(r, c)
+		return parseQueryTarget(r, p)
 	}
-	return parsePathTarget(r, c)
+	return parsePathTarget(r, p)
 }
 
-func parsePathTarget(r *http.Request, c config.Config) (Target, error) {
-	p := strings.TrimPrefix(r.URL.Path, "/")
-	idx := strings.Index(p, "https://")
-	if i := strings.Index(p, "http://"); i >= 0 && (idx < 0 || i < idx) {
+func parsePathTarget(r *http.Request, p *tenant.Policy) (Target, error) {
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	idx := strings.Index(path, "https://")
+	if i := strings.Index(path, "http://"); i >= 0 && (idx < 0 || i < idx) {
 		idx = i
 	}
 	if idx < 0 {
 		return Target{}, errInvalidSource()
 	}
-	prefix := p[:idx]
-	source := p[idx:]
+	prefix := path[:idx]
+	source := path[idx:]
 	if prefix == "" || !strings.HasSuffix(prefix, "/") {
 		return Target{}, errInvalidSource()
 	}
@@ -77,10 +77,10 @@ func parsePathTarget(r *http.Request, c config.Config) (Target, error) {
 			source += "?" + enc
 		}
 	}
-	return finishTarget(opsRaw, source, sig, exp, kid, c)
+	return finishTarget(opsRaw, source, sig, exp, kid, p)
 }
 
-func parseQueryTarget(r *http.Request, c config.Config) (Target, error) {
+func parseQueryTarget(r *http.Request, p *tenant.Policy) (Target, error) {
 	q := r.URL.Query()
 	rawSource := q.Get("src")
 	if rawSource == "" {
@@ -97,15 +97,12 @@ func parseQueryTarget(r *http.Request, c config.Config) (Target, error) {
 		return Target{}, errInvalidOps("at least one transformation is required")
 	}
 	exp, _ := strconv.ParseInt(q.Get("exp"), 10, 64)
-	return finishTarget(strings.Join(parts, ","), rawSource, q.Get("sig"), exp, q.Get("kid"), c)
+	return finishTarget(strings.Join(parts, ","), rawSource, q.Get("sig"), exp, q.Get("kid"), p)
 }
 
-func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, c config.Config) (Target, error) {
-	o, err := ops.Parse(opsRaw, c.Presets)
+func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, p *tenant.Policy) (Target, error) {
+	o, err := ops.Parse(opsRaw, p.Presets)
 	if err != nil {
-		return Target{}, errInvalidOps(err.Error())
-	}
-	if err := validatePresets(o, c.Presets); err != nil {
 		return Target{}, errInvalidOps(err.Error())
 	}
 	source, err := sign.CanonicalSource(rawSource)
@@ -113,19 +110,19 @@ func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, c config
 		return Target{}, errInvalidSource()
 	}
 	if u, err := url.Parse(source); err == nil {
-		if !c.AllowedHost(u.Hostname()) {
+		if !p.AllowedHost(u.Hostname()) {
 			return Target{}, errNotAllowed(u.Hostname())
 		}
 	}
 
-	if c.SignedOnly && sig == "" {
+	if p.SignedOnly && sig == "" {
 		return Target{}, errInvalidSignature()
 	}
 	if sig != "" {
-		if c.Signing == nil {
+		if p.Signing == nil {
 			return Target{}, errInvalidSignature()
 		}
-		if err := c.Signing.Verify(sig, o.Canonical(), source, exp); err != nil {
+		if err := p.Signing.Verify(sig, o.Canonical(), source, exp); err != nil {
 			switch err {
 			case sign.ErrExpired:
 				return Target{}, errSignatureExpired()
@@ -137,14 +134,4 @@ func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, c config
 		}
 	}
 	return Target{Ops: o, Canonical: o.Canonical(), Source: source, Signature: sig, Exp: exp, Kid: kid}, nil
-}
-
-func validatePresets(o ops.Ops, presets map[string]string) error {
-	if o.Preset == "" {
-		return nil
-	}
-	if _, ok := presets[o.Preset]; !ok {
-		return errInvalidOps("unknown preset " + o.Preset)
-	}
-	return nil
 }

@@ -24,6 +24,10 @@ func errInvalidSource() *HTTPError {
 	return &HTTPError{Status: http.StatusBadRequest, Code: "invalid_source_url", Message: "source must be an absolute http(s) URL"}
 }
 
+func errProjectNotFound() *HTTPError {
+	return &HTTPError{Status: http.StatusNotFound, Code: "project_not_found", Message: "no project is configured for this host"}
+}
+
 func errInvalidSignature() *HTTPError {
 	return &HTTPError{Status: http.StatusUnauthorized, Code: "invalid_signature", Message: "signature is invalid or missing"}
 }
@@ -70,6 +74,10 @@ func errOverloaded() *HTTPError {
 
 func errUnsupportedFormat(format string) *HTTPError {
 	return &HTTPError{Status: http.StatusUnsupportedMediaType, Code: "unsupported_format", Message: "output format is disabled: " + format}
+}
+
+func errQuotaExceeded() *HTTPError {
+	return &HTTPError{Status: http.StatusTooManyRequests, Code: "quota_exceeded", Message: "monthly transform quota exhausted", Retryable: false}
 }
 
 func errRateLimited() *HTTPError {

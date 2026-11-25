@@ -49,6 +49,13 @@ type Config struct {
 	L2        L2Config
 	CDN       CDNConfig
 
+	ControlURL         string
+	ControlToken       string
+	ControlSync        time.Duration
+	ControlTimeout     time.Duration
+	AllowProjectHeader bool
+	ProjectHeader      string
+
 	DisableAVIF bool
 	DisableWebP bool
 }
@@ -173,7 +180,21 @@ func Load() (Config, error) {
 			return c, fmt.Errorf("IOIMG_L2_TIMEOUT must be positive")
 		}
 	}
-	if c.SignedOnly && c.Signing == nil {
+	c.ControlURL = strings.TrimRight(env("IOIMG_CONTROL_URL", ""), "/")
+	c.ControlToken = os.Getenv("IOIMG_CONTROL_TOKEN")
+	c.ControlSync = envDuration("IOIMG_CONTROL_SYNC", 30*time.Second)
+	c.ControlTimeout = envDuration("IOIMG_CONTROL_TIMEOUT", 5*time.Second)
+	c.AllowProjectHeader = envBool("IOIMG_ALLOW_PROJECT_HEADER", false)
+	c.ProjectHeader = env("IOIMG_PROJECT_HEADER", "X-IOIMG-Project")
+	if c.ControlURL != "" {
+		if c.ControlToken == "" {
+			return c, fmt.Errorf("IOIMG_CONTROL_URL requires IOIMG_CONTROL_TOKEN")
+		}
+		if c.ControlSync <= 0 || c.ControlTimeout <= 0 {
+			return c, fmt.Errorf("IOIMG_CONTROL_SYNC and IOIMG_CONTROL_TIMEOUT must be positive")
+		}
+	}
+	if c.SignedOnly && c.Signing == nil && c.ControlURL == "" {
 		return c, fmt.Errorf("IOIMG_SIGNED_ONLY=true requires IOIMG_SIGNING_KEYS")
 	}
 	if len(c.Allowlist) == 0 && !c.AllowAnyHost {

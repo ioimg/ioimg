@@ -3,8 +3,10 @@
 > **Status 2026-11-25:** M0 selesai (PoC Rust + Go, bench kinstack).
 > M1 MVP data plane sudah diimplementasikan di [`../service/`](../service/README.md)
 > (ops P0, signed URL, SSRF guard, L1+L2 cache, ETag, f_auto, metrics,
-> purge CDN fan-out, warm/batch API, Docker, backend libvips (`-tags vips`).
-> Item M1 yang belum: 3 design partner produksi, plugin
+> purge CDN fan-out, warm/batch API, Docker, backend libvips (`-tags vips`),
+> **control plane multi-tenant** (project/signing key/API key/allowlist/preset/
+> usage, snapshot pull, dashboard, signing endpoint).
+> Item M1 yang belum: 3 design partner produksi, billing/payment provider, plugin
 > Nuxt/SvelteKit/Astro/Laravel/Shopify, Helm, dan `ioimg check-config`.
 > Keputusan stack: [ADR-0008](adr/0008-go-data-plane.md).
 
