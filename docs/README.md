@@ -7,6 +7,7 @@ Dokumen produk, kontrak, keputusan, dan operasi. Mulai dari yang paling umum:
 | [PRD.md](PRD.md) | Problem, persona, metrik, requirement, pricing, rilis |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Komponen, alur request, cache, layout |
 | [API.md](API.md) | Kontrak URL, parameter, signing, error model |
+| [PRICING-COST.md](PRICING-COST.md) | Biaya nyata per 1 juta gambar, kandidat compute/CDN (ID & global), margin, dan rencana harga |
 | [TOPOLOGY-CLOUD.md](TOPOLOGY-CLOUD.md) | Topologi cloud tier Free vs Pro: isolasi nodepool, cache, CDN, dan biaya |
 | [IMGPARITY.md](IMGPARITY.md) | Parity fitur vs imgproxy + prioritas |
 | [ROADMAP.md](ROADMAP.md) | Milestone M0–M4 + exit criteria |
