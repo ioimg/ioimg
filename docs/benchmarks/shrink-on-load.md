@@ -156,3 +156,19 @@ Sesi terpisah, build `-tags vips`, 1 thread, MISS, sumber 2400×1600 → `w_400`
 Kesimpulan: opsi encoder adalah keputusan kualitas/ukuran, bukan keputusan
 throughput; yang mahal tetap format (AVIF 7 rps, PNG 18–21 rps vs JPEG 70 rps
 pada `w_400`). Cache yang menyelamatkan, bukan kecepatan encode.
+
+## Watermark (`wm_`/`wmu_`)
+
+Satu gambar 2400×1600 → `w_400,f_jpg,q_80`, MISS, 1 koneksi, libvips:
+
+| Kasus | rps | p50 |
+| --- | --- | --- |
+| tanpa watermark | 76 | 10,3 ms |
+| `wm_0.6:soea:10:10:0.2` (watermark 2400 px di-stamp 80 px) | 49 | 17,4 ms |
+
+Biayanya di round-trip vips→Go→vips (jalur yang sama dengan duotone/colorize),
+bukan di compositing: `applyWatermark` sendiri 1,7 ms. Perbaikan penting yang
+ditemukan saat bench: downscale Catmull-Rom langsung dari 2400 px ke 80 px
+memakan **72 ms** (kernel support melebar seiring rasio); pra-shrink bilinear ke
+2× target menurunkannya ke **1,7 ms**. HIT tidak terpengaruh (84,8k rps,
+p50 80 µs).

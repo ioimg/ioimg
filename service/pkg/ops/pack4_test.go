@@ -248,3 +248,52 @@ func TestParseDPI(t *testing.T) {
 		}
 	}
 }
+
+func TestParseWatermark(t *testing.T) {
+	o, err := Parse("w_100,wm_0.5:soea:10:-20:0.25", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Watermark == nil {
+		t.Fatal("watermark not parsed")
+	}
+	w := *o.Watermark
+	if w.Opacity != 0.5 || w.Position != "soea" || w.XOffset != 10 || w.YOffset != -20 || w.Scale != 0.25 {
+		t.Fatalf("watermark %+v", w)
+	}
+	if !contains(o.Canonical(), "wm_0.5:soea:10:-20:0.25") {
+		t.Fatalf("canonical %q", o.Canonical())
+	}
+
+	// Defaults: opacity 1, centred, native size.
+	o, err = Parse("w_100,wm", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Watermark == nil || o.Watermark.Opacity != 1 || o.Watermark.Position != "ce" || o.Watermark.Scale != 0 {
+		t.Fatalf("defaults %+v", o.Watermark)
+	}
+	// wm_0 disables the watermark entirely, including the canonical entry.
+	o, err = Parse("w_100,wm_0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Watermark != nil || contains(o.Canonical(), "wm_") {
+		t.Fatalf("wm_0 leaked: %+v %q", o.Watermark, o.Canonical())
+	}
+
+	for _, bad := range []string{"wm_2", "wm_1:xx", "wm_1:ce:1:2:0.5:9"} {
+		if _, err := Parse("w_100,"+bad, nil); err == nil {
+			t.Errorf("%s: expected error", bad)
+		}
+	}
+
+	enc := base64.RawURLEncoding.EncodeToString([]byte("https://cdn.example.com/wm.png"))
+	o, err = Parse("w_100,wm,wmu_"+enc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.WatermarkURL != "https://cdn.example.com/wm.png" || !contains(o.Canonical(), "wmu_"+enc) {
+		t.Fatalf("wmu %q %q", o.WatermarkURL, o.Canonical())
+	}
+}

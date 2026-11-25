@@ -3,6 +3,8 @@
 package imaging
 
 import (
+	"image"
+
 	"github.com/ioimg/ioimg/service/pkg/ops"
 )
 
@@ -33,3 +35,7 @@ func (pureProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 	res.Timings = timings
 	return res, nil
 }
+
+// DecodeAny decodes an image with whichever backend is linked. It exists for
+// auxiliary images (watermarks) that must not assume the transform pipeline.
+func DecodeAny(data []byte) (image.Image, Info, error) { return decode(data, true) }

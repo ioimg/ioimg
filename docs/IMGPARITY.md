@@ -19,7 +19,7 @@ rencana. Item 🟡/⛔ adalah backlog, bukan klaim marketing.
 | Format web modern | ✅ | JPEG/PNG/WebP/AVIF/GIF + `f_auto` |
 | Format input luas | 🟡 | +BMP/TIFF; belum JXL/HEIC/ICO/PSD/PDF/video |
 | Filter dasar | ✅ | blur, sharpen, pixelate, brightness, contrast, saturation, monochrome, trim |
-| Watermark | ⛔ | image/text/custom/shadow/rotate belum ada |
+| Watermark | 🟡 | `wm_` + `wmu_` (gambar) selesai: opacity/9 posisi/repeat/chessboard/offset/scale, kedua backend. Belum: teks (`wmt`, butuh font/Pango), ukuran eksplisit (`wms`), rotasi (`wmr`), shadow (`wmsh`) |
 | Transform lanjutan | 🟡 | duotone, colorize, gradient ✅ (ketiganya **Pro** imgproxy); chained pipeline belum |
 | Smart/AI | ⛔ | smart crop, face crop, object crop/blur, autoquality DSSIM |
 | Keamanan URL | 🟡 | signing + expiry + allowlist + SSRF; belum enkripsi source/hashsum/auth header |
@@ -102,8 +102,9 @@ Konsekuensinya untuk dokumen ini:
 | Rotating | 🟡 | 90/180/270 + auto EXIF (`ar_0` mematikan auto-rotate); belum sudut arbitrer |
 | Flattening | 🟡 | otomatis untuk JPEG & pad; belum op flatten independen |
 | Flatten background semi-transparan | ⛔ | `bg` hanya `RRGGBB` |
-| Watermark image/text/custom | ⛔ | perlu compositing + font; kandidat M3 |
-| Watermark shadow/rotate | ⛔ | ikut watermark |
+| Watermark image | ✅ | `wm_` + `wmu_`; kompositing di `internal/imaging/watermark.go`, dipakai kedua backend |
+| Watermark text/custom | ⛔ | butuh font + Pango; sengaja belum |
+| Watermark shadow/rotate | ⛔ | `wmsh`/`wmr` belum; rotasi gambar watermark perlu affine |
 | Blur, sharpen, pixelate | ✅ | `blur`, `sharp`, `pixel`/`px` |
 | Unsharp masking | ✅ | `sharp` (approx.) |
 | Brightness/contrast/saturation | ✅ | `bri`, `con`, `sat`, baru |

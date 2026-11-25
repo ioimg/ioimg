@@ -56,6 +56,10 @@ func errDecode() *HTTPError {
 	return &HTTPError{Status: http.StatusUnprocessableEntity, Code: "decode_failed", Message: "source is not a supported or valid image"}
 }
 
+func errWatermarkMissing() *HTTPError {
+	return &HTTPError{Status: http.StatusUnprocessableEntity, Code: "watermark_unavailable", Message: "wm_ was requested but no watermark image could be loaded"}
+}
+
 func errHashsumMismatch() *HTTPError {
 	return &HTTPError{Status: http.StatusUnprocessableEntity, Code: "hashsum_mismatch", Message: "source hashsum does not match hs_"}
 }

@@ -114,6 +114,11 @@ type Ops struct {
 	Colorize Colorize
 	// Gradient overlays a colour ramp (imgproxy Pro). Zero opacity = off.
 	Gradient Gradient
+	// Watermark composites a watermark image over the result (imgproxy wm_).
+	// Nil or Opacity 0 means no watermark.
+	Watermark *Watermark
+	// WatermarkURL is the per-request watermark image (imgproxy wmu_).
+	WatermarkURL string
 	// DPI sets the density metadata of the encoded image (imgproxy dpi_). It
 	// never changes pixels, so it is part of the cache key only because the
 	// encoded bytes differ.
@@ -211,12 +216,23 @@ func Parse(raw string, presets map[string]string) (Ops, error) {
 
 type pair struct{ key, value string }
 
+// bareOptions are the options whose arguments are all optional.
+var bareOptions = map[string]bool{"wm": true, "watermark": true}
+
+func isBareOption(s string) bool { return bareOptions[strings.ToLower(s)] }
+
 func splitPairs(raw string) ([]pair, error) {
 	parts := strings.Split(raw, ",")
 	out := make([]pair, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
+			continue
+		}
+		// imgproxy allows a few options with every argument optional, so the bare
+		// name is a valid way to request their defaults.
+		if isBareOption(part) {
+			out = append(out, pair{key: part, value: ""})
 			continue
 		}
 		k, v, ok := strings.Cut(part, "_")
@@ -382,6 +398,20 @@ func (o *Ops) set(key, value string) error {
 			return err
 		}
 		o.AVIFEncoder = &a
+	case "wm", "watermark":
+		w, err := parseWatermark(value)
+		if err != nil {
+			return err
+		}
+		if w.Opacity > 0 {
+			o.Watermark = &w
+		}
+	case "wmu", "watermark_url":
+		u, err := DecodeWatermarkURL(value)
+		if err != nil {
+			return err
+		}
+		o.WatermarkURL = u
 	case "dpi":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil || f < 0 || f > 100000 {
@@ -675,6 +705,12 @@ func (o Ops) Canonical() string {
 	}
 	if o.Contrast != 0 {
 		add("con", strconv.Itoa(o.Contrast))
+	}
+	if o.Watermark != nil {
+		add("wm", o.Watermark.canonical())
+	}
+	if o.WatermarkURL != "" {
+		add("wmu", base64.RawURLEncoding.EncodeToString([]byte(o.WatermarkURL)))
 	}
 	if o.DPI > 0 {
 		add("dpi", trimFloat(o.DPI))

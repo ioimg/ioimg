@@ -128,6 +128,11 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 		img = adjustColor(img, o.Brightness, o.Contrast, o.Saturation, o.Monochrome)
 	}
 	img = applyColorEffects(img, o)
+	if o.Watermark != nil && opts.Watermark != nil {
+		start = nowMs()
+		img = applyWatermark(img, opts.Watermark, *o.Watermark)
+		timings["watermark"] = nowMs() - start
+	}
 	timings["transform"] = nowMs() - start
 
 	start = nowMs()

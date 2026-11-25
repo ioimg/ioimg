@@ -5,6 +5,9 @@ package imaging
 import (
 	"bytes"
 	"encoding/binary"
+	"image"
+	"image/color"
+	"image/png"
 	"testing"
 
 	"github.com/davidbyttow/govips/v2/vips"
@@ -103,5 +106,42 @@ func TestVipsDPI(t *testing.T) {
 				t.Fatalf("jpeg density = %d, want 144", got)
 			}
 		}
+	}
+}
+
+// TestVipsWatermarkParity pins that the vips pipeline composites the watermark
+// through the same routine as the pure-Go pipeline.
+func TestVipsWatermarkParity(t *testing.T) {
+	ensureVips()
+	src := vipsSizedJPEG(t, 64, 48)
+	wmImg := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			wmImg.SetNRGBA(x, y, color.NRGBA{R: 255, A: 255})
+		}
+	}
+	wm := image.Image(wmImg)
+
+	o, err := ops.Parse("w_64,h_48,c_fill,wm_1:ce", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := DefaultProcessor().Process(src, o, Options{OutFormat: ops.FormatPNG, Quality: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked, err := DefaultProcessor().Process(src, o, Options{OutFormat: ops.FormatPNG, Quality: 80, Watermark: wm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(plain.Data, marked.Data) {
+		t.Fatal("vips watermark produced an identical image")
+	}
+	img, err := png.Decode(bytes.NewReader(marked.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := color.NRGBAModel.Convert(img.At(32, 24)).(color.NRGBA); got.R < 200 {
+		t.Fatalf("centre pixel %+v, want the red watermark", got)
 	}
 }

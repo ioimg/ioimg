@@ -36,8 +36,11 @@ type Config struct {
 	SourceTimeout   time.Duration
 	SourceMaxBytes  int64
 	SourceUserAgent string
-	MaxDimension    int
-	Concurrency     int
+	// WatermarkURL is the default watermark image used by wm_ when the request
+	// does not supply wmu_ (imgproxy's IMGPROXY_WATERMARK_URL).
+	WatermarkURL string
+	MaxDimension int
+	Concurrency  int
 
 	CacheDir      string
 	CacheMaxBytes int64
@@ -125,6 +128,7 @@ func Load() (Config, error) {
 		SourceTimeout:    envDuration("IOIMG_SOURCE_TIMEOUT", 15*time.Second),
 		SourceMaxBytes:   int64(envInt("IOIMG_SOURCE_MAX_BYTES", 25*1024*1024)),
 		SourceUserAgent:  env("IOIMG_SOURCE_USER_AGENT", "github.com/ioimg/ioimg/service/0.1 (+https://ioimg.net)"),
+		WatermarkURL:     env("IOIMG_WATERMARK_URL", ""),
 		MaxDimension:     envInt("IOIMG_MAX_DIMENSION", ops.MaxDimension),
 		Concurrency:      envInt("IOIMG_CONCURRENCY", 0),
 		CacheDir:         env("IOIMG_CACHE_DIR", "./cache"),

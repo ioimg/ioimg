@@ -9,6 +9,7 @@ package imaging
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"os"
 	"runtime"
@@ -119,6 +120,10 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	img, err = applyWatermarkVips(img, o, opts)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := enforceMinimumVips(img, o); err != nil {
 		return Result{}, err
 	}
@@ -183,6 +188,10 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 		return Result{}, err
 	}
 	img, err = applyColorEffectsVips(img, o)
+	if err != nil {
+		return Result{}, err
+	}
+	img, err = applyWatermarkVips(img, o, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -448,6 +457,26 @@ func pixelateVips(img *vips.ImageRef, block int) error {
 // per-pixel hook, so duotone/colorize round-trip through a Go image: the effect
 // only runs when the URL asks for it, and the result stays identical to the
 // pure-Go path.
+// applyWatermarkVips composites the watermark through the same pure-Go routine
+// the default backend uses, so both backends place pixels identically. The
+// round-trip is the price of parity; watermarks are small and this only runs on
+// cache misses.
+func applyWatermarkVips(img *vips.ImageRef, o ops.Ops, opts Options) (*vips.ImageRef, error) {
+	if o.Watermark == nil || opts.Watermark == nil {
+		return img, nil
+	}
+	goImg, err := img.ToImage(&vips.ExportParams{})
+	if err != nil {
+		return nil, fmt.Errorf("decode for watermark: %w", err)
+	}
+	next, err := vips.NewImageFromGoImage(applyWatermark(goImg, opts.Watermark, *o.Watermark))
+	if err != nil {
+		return nil, fmt.Errorf("reload after watermark: %w", err)
+	}
+	img.Close()
+	return next, nil
+}
+
 func applyColorEffectsVips(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error) {
 	if o.Colorize.Opacity <= 0 && o.Duotone.Intensity <= 0 && o.Gradient.IsZero() {
 		return img, nil
@@ -881,4 +910,27 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// DecodeAny decodes an image with libvips, mirroring the pure-Go helper.
+func DecodeAny(data []byte) (image.Image, Info, error) {
+	ensureVips()
+	img, err := vips.NewImageFromBuffer(data)
+	if err != nil {
+		return nil, Info{}, ErrDecode
+	}
+	defer img.Close()
+	info := Info{
+		Width:    img.Width(),
+		Height:   img.Height(),
+		Format:   imageTypeName(img.Format()),
+		HasAlpha: img.HasAlpha(),
+		Animated: img.Pages() > 1,
+		Bytes:    len(data),
+	}
+	goImg, err := img.ToImage(&vips.ExportParams{})
+	if err != nil {
+		return nil, Info{}, ErrDecode
+	}
+	return goImg, info, nil
 }
