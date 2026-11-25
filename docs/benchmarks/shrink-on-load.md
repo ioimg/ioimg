@@ -66,3 +66,17 @@ beban batch/warm yang memang sekuensial per gambar.
   `ioimg_coalesced_total` menghitung request yang menumpang transform in-flight.
 - Service yang dibangun tanpa `-tags vips` memakai pipeline pure-Go (~9x lebih
   lambat per transform); sekarang startup menulis WARN, bukan diam saja.
+
+## Anti-regresi setelah hardening
+
+Diukur ulang setelah uji dimensi (`MaxSide`/`MaxPixels` dari `DecodeConfig`) dan
+pemindahan config celeris ke `celerisConfig()`:
+
+| Jalur | rps | p50 | catatan |
+| --- | --- | --- | --- |
+| HIT 17.751 B (celeris `io_uring`, 8 keep-alive) | **80.529** | 80 µs | baseline sebelumnya 79.206 → tidak ada regresi |
+| MISS `w_400,c_fit` (libvips, 1 koneksi, concurrency 1) | 73 | 10,35 ms | `transform_ns_total` 9,0 ms/gambar → shrink-on-load masih aktif |
+
+Guard dimensi tidak menambah biaya: ia hanya membaca IHDR
+(`image.DecodeConfig`) sebelum decode, dan pada jalur vips dimensi datang dari
+header yang memang sudah dibaca lazy.

@@ -118,6 +118,21 @@ func preforkEnabled() bool {
 // same address cannot succeed.
 var errEngineUnavailable = errors.New("transport engine unavailable")
 
+// celerisConfig is the celeris engine configuration. Timeouts are set here
+// rather than in serveCeleris so a test can pin them: celeris is the default
+// transport, and an untimed one is a slowloris target.
+func celerisConfig(cfg config.Config) celeris.Config {
+	return celeris.Config{
+		Addr:               cfg.Addr,
+		Engine:             celeris.IOUring,
+		DisableMetrics:     true,
+		MaxRequestBodySize: 4 << 20,
+		ReadTimeout:        readTimeout,
+		WriteTimeout:       writeTimeout,
+		IdleTimeout:        idleTimeout,
+	}
+}
+
 func serveCeleris(ctx context.Context, srv *server.Server, cfg config.Config, log *slog.Logger) error {
 	// Pinned event loops lose to blocking reads: io_uring cache reads cost 26%
 	// there. See ADR-0011.
@@ -126,15 +141,7 @@ func serveCeleris(ctx context.Context, srv *server.Server, cfg config.Config, lo
 	// celeris binds the address itself: it rebinds with SO_REUSEPORT so several
 	// processes can share one port, and a listener supplied from outside is
 	// closed again for that reason.
-	app := celeris.New(celeris.Config{
-		Addr:               cfg.Addr,
-		Engine:             celeris.IOUring,
-		DisableMetrics:     true,
-		MaxRequestBodySize: 4 << 20,
-		ReadTimeout:        readTimeout,
-		WriteTimeout:       writeTimeout,
-		IdleTimeout:        idleTimeout,
-	})
+	app := celeris.New(celerisConfig(cfg))
 	app.GET("/*path", srv.CelerisHandler)
 	app.HEAD("/*path", srv.CelerisHandler)
 
