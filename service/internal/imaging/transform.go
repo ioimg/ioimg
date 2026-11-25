@@ -22,6 +22,12 @@ import (
 	_ "github.com/gen2brain/avif"
 	webp "github.com/gen2brain/webp"
 	xdraw "golang.org/x/image/draw"
+
+	// Register additional input decoders. These are decode-only: the output
+	// formats advertised by AvailableFormats stay the same as imgproxy's
+	// common web targets.
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
 )
 
 // AvailableFormats reports which output encoders this build supports.
@@ -104,6 +110,12 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 		if err != nil {
 			return nil, timings, err
 		}
+	}
+	if o.Pixelate > 0 {
+		img = pixelate(img, o.Pixelate)
+	}
+	if o.Brightness != 0 || o.Contrast != 0 || o.Saturation != 0 || o.Monochrome {
+		img = adjustColor(img, o.Brightness, o.Contrast, o.Saturation, o.Monochrome)
 	}
 	timings["transform"] = nowMs() - start
 
@@ -481,6 +493,79 @@ func sharpen(src image.Image, amount float64) image.Image {
 		}
 	}
 	return dst
+}
+
+// pixelate averages blocks of block x block pixels. Large blocks are clamped
+// to the smaller image side so the whole frame becomes its average colour.
+func pixelate(src image.Image, block int) image.Image {
+	img := toNRGBA(src)
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	block = min(max(block, 1), max(w, h))
+	if block <= 1 {
+		return img
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for by := 0; by < h; by += block {
+		for bx := 0; bx < w; bx += block {
+			x1, y1 := min(bx+block, w), min(by+block, h)
+			var sum [4]int
+			for y := by; y < y1; y++ {
+				for x := bx; x < x1; x++ {
+					off := img.PixOffset(x, y)
+					sum[0] += int(img.Pix[off])
+					sum[1] += int(img.Pix[off+1])
+					sum[2] += int(img.Pix[off+2])
+					sum[3] += int(img.Pix[off+3])
+				}
+			}
+			n := (x1 - bx) * (y1 - by)
+			avg := color.NRGBA{uint8(sum[0] / n), uint8(sum[1] / n), uint8(sum[2] / n), uint8(sum[3] / n)}
+			for y := by; y < y1; y++ {
+				for x := bx; x < x1; x++ {
+					dst.SetNRGBA(x, y, avg)
+				}
+			}
+		}
+	}
+	return dst
+}
+
+// adjustColor applies brightness, contrast, saturation, and grayscale in one
+// pass. Values follow imgproxy's -100..100 convention; alpha is untouched.
+func adjustColor(src image.Image, brightness, contrast, saturation int, mono bool) image.Image {
+	img := toNRGBA(src)
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	bri := float64(brightness) * 2.55
+	con := (100 + float64(contrast)) / 100
+	sat := (100 + float64(saturation)) / 100
+	if mono {
+		sat = 0
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			off := img.PixOffset(x, y)
+			r := (float64(img.Pix[off])+bri-128)*con + 128
+			g := (float64(img.Pix[off+1])+bri-128)*con + 128
+			b := (float64(img.Pix[off+2])+bri-128)*con + 128
+			luma := 0.299*r + 0.587*g + 0.114*b
+			dst.Pix[off] = clampByte(luma + (r-luma)*sat)
+			dst.Pix[off+1] = clampByte(luma + (g-luma)*sat)
+			dst.Pix[off+2] = clampByte(luma + (b-luma)*sat)
+			dst.Pix[off+3] = img.Pix[off+3]
+		}
+	}
+	return dst
+}
+
+func clampByte(v float64) uint8 {
+	if v <= 0 {
+		return 0
+	}
+	if v >= 255 {
+		return 255
+	}
+	return uint8(math.Round(v))
 }
 
 // trim removes a uniform border, with fuzz on a 0..40 scale.

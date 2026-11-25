@@ -159,7 +159,74 @@ func apply(img *vips.ImageRef, o ops.Ops) error {
 			return err
 		}
 	}
-	return geometry(img, o)
+	if err := geometry(img, o); err != nil {
+		return err
+	}
+	if o.Pixelate > 0 {
+		if err := pixelateVips(img, o.Pixelate); err != nil {
+			return err
+		}
+	}
+	if o.Brightness != 0 || o.Contrast != 0 || o.Saturation != 0 || o.Monochrome {
+		if err := adjustColorVips(img, o); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pixelateVips(img *vips.ImageRef, block int) error {
+	w, h := img.Width(), img.Height()
+	block = maxInt(1, minInt(block, maxInt(w, h)))
+	if block <= 1 {
+		return nil
+	}
+	bw := maxInt(1, w/block)
+	bh := maxInt(1, h/block)
+	if err := img.ResizeWithVScale(float64(bw)/float64(w), float64(bh)/float64(h), vips.KernelNearest); err != nil {
+		return err
+	}
+	return img.ResizeWithVScale(float64(w)/float64(bw), float64(h)/float64(bh), vips.KernelNearest)
+}
+
+func adjustColorVips(img *vips.ImageRef, o ops.Ops) error {
+	if o.Brightness != 0 {
+		if err := linearVips(img, 1, float64(o.Brightness)*2.55); err != nil {
+			return err
+		}
+	}
+	if o.Contrast != 0 {
+		f := (100 + float64(o.Contrast)) / 100
+		if err := linearVips(img, f, 128*(1-f)); err != nil {
+			return err
+		}
+	}
+	if o.Saturation != 0 || o.Monochrome {
+		sat := (100 + float64(o.Saturation)) / 100
+		if o.Monochrome {
+			sat = 0
+		}
+		if err := img.Modulate(1, sat, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linearVips applies output = input*a + b without touching the alpha band.
+func linearVips(img *vips.ImageRef, a, b float64) error {
+	bands := img.Bands()
+	if img.HasAlpha() && bands > 1 {
+		aa := make([]float64, bands)
+		bb := make([]float64, bands)
+		for i := 0; i < bands-1; i++ {
+			aa[i] = a
+			bb[i] = b
+		}
+		aa[bands-1] = 1
+		return img.Linear(aa, bb)
+	}
+	return img.Linear1(a, b)
 }
 
 func geometry(img *vips.ImageRef, o ops.Ops) error {

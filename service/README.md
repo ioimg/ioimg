@@ -25,7 +25,9 @@ Contoh:
 | Fetch origin + SSRF guard + size/timeout | ✅ |
 | Resize `fit/fill/force/pad/crop/scale`, gravity, DPR | ✅ |
 | Format `jpeg/png/webp/avif/gif/json`, `f_auto` | ✅ (AVIF = WASM, lambat) |
+| Input `jpeg/png/webp/avif/gif/bmp/tiff` | ✅ (TIFF/BMP decode-only) |
 | Rotate, flip, blur, sharpen, trim, strip, palette, bg | ✅ |
+| Color `bri/con/sat/mono` + `pixelate` | ✅ |
 | L1 cache disk + single-flight + ETag/304 | ✅ |
 | L2 cache S3/R2/MinIO (read-through + write-through) | ✅ |
 | Purge lokal + fan-out Cloudflare/Bunny/Fastly | ✅ |
@@ -149,7 +151,7 @@ Header respons mengikuti `docs/API.md §5`: `Content-Type`, `Content-Length`,
   sehingga DNS rebinding tidak lolos; redirect diikuti maksimal 5 hop dan
   dievaluasi ulang; IP privat/loopback/link-local/metadata/CGNAT ditolak.
 - **Batas**: ukuran source, timeout, 40 MP / 8192 px, `w/h` maksimum 8192.
-- **Decoder**: hanya JPEG/PNG/GIF/WebP/AVIF; SVG tidak diterima. Metadata
+- **Decoder**: hanya JPEG/PNG/GIF/WebP/AVIF/BMP/TIFF; SVG tidak diterima. Metadata
   (EXIF/GPS) dibuang oleh encoder Go.
 - **Signed URL**: HMAC constant-time, expiry, rotasi key dengan grace (semua key
   diverifikasi; key pertama menandatangani).

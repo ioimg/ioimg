@@ -73,6 +73,11 @@ type Ops struct {
 	Background string // RRGGBB or "transparent"; empty = not set
 	Blur       float64
 	Sharpen    float64
+	Brightness int    // -100..100
+	Contrast   int    // -100..100
+	Saturation int    // -100..100
+	Pixelate   int    // block size in pixels; 0 = off
+	Monochrome bool   // grayscale filter
 	Rotate     int    // 0, 90, 180, 270
 	Flip       string // "", "h", "v", "hv"
 	Trim       int
@@ -254,6 +259,39 @@ func (o *Ops) set(key, value string) error {
 			return fmt.Errorf("blur must be 0..100")
 		}
 		o.Blur = f
+	case "bri", "brightness":
+		n, err := parseSigned(value)
+		if err != nil {
+			return fmt.Errorf("bri must be -100..100")
+		}
+		o.Brightness = n
+	case "con", "contrast":
+		n, err := parseSigned(value)
+		if err != nil {
+			return fmt.Errorf("con must be -100..100")
+		}
+		o.Contrast = n
+	case "sat", "saturation":
+		n, err := parseSigned(value)
+		if err != nil {
+			return fmt.Errorf("sat must be -100..100")
+		}
+		o.Saturation = n
+	case "pixel", "px":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 200 {
+			return fmt.Errorf("pixel must be 1..200")
+		}
+		o.Pixelate = n
+	case "mono", "monochrome":
+		switch value {
+		case "0":
+			o.Monochrome = false
+		case "1":
+			o.Monochrome = true
+		default:
+			return fmt.Errorf("mono must be 0 or 1")
+		}
 	case "sharp", "sharpen":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil || f < 0 || f > 10 {
@@ -343,6 +381,14 @@ func (o *Ops) validate() error {
 	return nil
 }
 
+func parseSigned(v string) (int, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < -100 || n > 100 {
+		return 0, fmt.Errorf("out of range")
+	}
+	return n, nil
+}
+
 func parseDim(v string) (int, error) {
 	n, err := strconv.Atoi(v)
 	if err != nil {
@@ -418,7 +464,13 @@ func (o Ops) Canonical() string {
 	if o.Blur != 0 {
 		add("blur", trimFloat(o.Blur))
 	}
+	if o.Brightness != 0 {
+		add("bri", strconv.Itoa(o.Brightness))
+	}
 	add("c", string(o.Resize))
+	if o.Contrast != 0 {
+		add("con", strconv.Itoa(o.Contrast))
+	}
 	if o.DPR != 1 {
 		add("dpr", trimFloat(o.DPR))
 	}
@@ -435,14 +487,23 @@ func (o Ops) Canonical() string {
 	} else if o.Height != 0 {
 		add("h", strconv.Itoa(o.Height))
 	}
+	if o.Monochrome {
+		add("mono", "1")
+	}
 	if o.Palette {
 		add("palette", "1")
+	}
+	if o.Pixelate != 0 {
+		add("pixel", strconv.Itoa(o.Pixelate))
 	}
 	if o.Quality != 0 {
 		add("q", strconv.Itoa(o.Quality))
 	}
 	if o.Rotate != 0 {
 		add("rot", strconv.Itoa(o.Rotate))
+	}
+	if o.Saturation != 0 {
+		add("sat", strconv.Itoa(o.Saturation))
 	}
 	if o.Sharpen != 0 {
 		add("sharp", trimFloat(o.Sharpen))

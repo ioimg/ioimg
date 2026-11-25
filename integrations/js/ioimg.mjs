@@ -1,13 +1,13 @@
 // ioimg URL builder (browser + Node 18+).
 //
 // This file mirrors the canonicalisation rules of the Go service:
-//   - op order: bg, blur, c, dpr, enlarge, f, flip, g, h, palette, q, rot,
-//     sharp, strip, trim, w
+//   - op order: bg, blur, bri, c, con, dpr, enlarge, f, flip, g, h, mono,
+//     palette, pixel, q, rot, sat, sharp, strip, trim, w
 //   - defaults: c=fit, f=auto, g=center, strip=1, dpr=1
 //   - source: lowercase scheme/host, drop default port/fragment, collapse //
 
 const DEFAULTS = { c: 'fit', f: 'auto', g: 'center', strip: 1, dpr: 1 };
-const ORDER = ['bg', 'blur', 'c', 'dpr', 'enlarge', 'f', 'flip', 'g', 'h', 'palette', 'q', 'rot', 'sharp', 'strip', 'trim', 'w'];
+const ORDER = ['bg', 'blur', 'bri', 'c', 'con', 'dpr', 'enlarge', 'f', 'flip', 'g', 'h', 'mono', 'palette', 'pixel', 'q', 'rot', 'sat', 'sharp', 'strip', 'trim', 'w'];
 const FORMAT_ALIASES = { jpg: 'jpeg' };
 
 /** Normalise a source URL exactly like the server does. */

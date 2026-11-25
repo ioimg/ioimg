@@ -22,10 +22,30 @@ func TestParseCanonicalOrderIndependent(t *testing.T) {
 	}
 }
 
+func TestParseFiltersAndCanonical(t *testing.T) {
+	a, err := Parse("w_100,bri_20,con_-10,sat_15,px_8,mono_1,f_webp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Parse("mono_1,px_8,sat_15,con_-10,bri_20,f_webp,w_100", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Canonical() != b.Canonical() {
+		t.Fatalf("canonical differs:\n%s\n%s", a.Canonical(), b.Canonical())
+	}
+	for _, want := range []string{"bri_20", "con_-10", "sat_15", "pixel_8", "mono_1"} {
+		if !strings.Contains(a.Canonical(), want) {
+			t.Fatalf("canonical %q missing %q", a.Canonical(), want)
+		}
+	}
+}
+
 func TestParseRejectsBadInput(t *testing.T) {
 	cases := []string{
 		"", "w", "w_0", "w_9000", "w_auto", "f_tiff", "c_unknown", "q_101",
 		"dpr_4", "bg_red", "rot_45", "flip_x", "trim_99", "unknown_1",
+		"bri_101", "con_-101", "sat_101", "pixel_0", "mono_2",
 	}
 	for _, c := range cases {
 		if _, err := Parse(c, nil); err == nil {

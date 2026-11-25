@@ -32,7 +32,7 @@ function ioimg_canonical_ops(array $ops): string
 {
     $defaults = ['c' => 'fit', 'f' => 'auto', 'g' => 'center', 'strip' => '1', 'dpr' => '1'];
     $ops = array_merge($defaults, array_filter($ops, static fn($v) => $v !== null && $v !== ''));
-    $order = ['bg', 'blur', 'c', 'dpr', 'enlarge', 'f', 'flip', 'g', 'h', 'palette', 'q', 'rot', 'sharp', 'strip', 'trim', 'w'];
+    $order = ['bg', 'blur', 'bri', 'c', 'con', 'dpr', 'enlarge', 'f', 'flip', 'g', 'h', 'mono', 'palette', 'pixel', 'q', 'rot', 'sat', 'sharp', 'strip', 'trim', 'w'];
     $parts = [];
     foreach ($order as $key) {
         if (!array_key_exists($key, $ops)) {

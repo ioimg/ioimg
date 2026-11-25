@@ -68,6 +68,11 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `dpr` | device pixel ratio | 1, 1.5, 2, 3 | 1 | Mengalikan `w` & `h` |
 | `bg` | background | hex `RRGGBB`, `transparent` | `transparent` | Untuk `pad` dan PNG→JPEG |
 | `blur` | blur | 0..100 | 0 | Gaussian sigma proporsional |
+| `bri` | brightness | -100..100 | 0 | Ditambahkan di parity pack 1; alias `brightness` |
+| `con` | contrast | -100..100 | 0 | Alias `contrast` |
+| `sat` | saturation | -100..100 | 0 | Alias `saturation`; `-100` = grayscale |
+| `pixel` | pixelate | 1..200 | — | Ukuran blok dalam piksel; alias `px` |
+| `mono` | monochrome | `1` | 0 | Grayscale; alias `monochrome` |
 | `sharp` | sharpen | 0..10 | 0 | Unsharp mask |
 | `rot` | rotate | `90`, `180`, `270` | — | Rotasi kelipatan 90° |
 | `flip` | flip | `h`, `v`, `hv` | — | |

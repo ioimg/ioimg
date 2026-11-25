@@ -9,6 +9,9 @@ import (
 	"image/jpeg"
 	"testing"
 
+	"golang.org/x/image/bmp"
+	"golang.org/x/image/tiff"
+
 	"ioimg/internal/ops"
 )
 
@@ -103,6 +106,75 @@ func TestBlurSharpenTrim(t *testing.T) {
 		}
 		if _, _, err := Transform(img, o, Options{OutFormat: ops.FormatJPEG}); err != nil {
 			t.Fatalf("%s: %v", raw, err)
+		}
+	}
+}
+
+func TestFiltersAndPixelate(t *testing.T) {
+	img, _, _ := Decode(testJPEG(t))
+	for _, raw := range []string{
+		"w_60,bri_20", "w_60,con_-20", "w_60,sat_30", "w_60,mono_1",
+		"w_60,pixel_8", "w_60,bri_10,con_10,sat_10,pixel_4,mono_1",
+	} {
+		o, err := ops.Parse(raw, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		out, _, err := Transform(img, o, Options{OutFormat: ops.FormatPNG})
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		decoded, _, err := image.Decode(bytes.NewReader(out))
+		if err != nil {
+			t.Fatalf("%s: output not decodable: %v", raw, err)
+		}
+		if decoded.Bounds().Dx() != 60 {
+			t.Fatalf("%s: want width 60, got %d", raw, decoded.Bounds().Dx())
+		}
+	}
+
+	// Monochrome really removes chroma.
+	o, _ := ops.Parse("mono_1,f_png", nil)
+	out, _, err := Transform(img, o, Options{OutFormat: ops.FormatPNG})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, _, _ := image.Decode(bytes.NewReader(out))
+	for _, p := range []image.Point{{0, 0}, {10, 10}, {50, 40}} {
+		r, g, b, _ := decoded.At(p.X, p.Y).RGBA()
+		if r != g || g != b {
+			t.Fatalf("pixel %v is not grayscale: %d %d %d", p, r, g, b)
+		}
+	}
+}
+
+func TestAdditionalInputDecoders(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 32, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 32; x++ {
+			img.Set(x, y, color.NRGBA{R: uint8(x * 8), G: uint8(y * 16), B: 100, A: 255})
+		}
+	}
+	var bmpBuf bytes.Buffer
+	if err := bmp.Encode(&bmpBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	var tiffBuf bytes.Buffer
+	if err := tiff.Encode(&tiffBuf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"bmp": bmpBuf.Bytes(), "tiff": tiffBuf.Bytes()} {
+		decoded, info, err := Decode(data)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if info.Width != 32 || info.Height != 16 || info.Format != name {
+			t.Fatalf("%s: unexpected info %+v", name, info)
+		}
+		o, _ := ops.Parse("w_16,f_png", nil)
+		out, _, err := Transform(decoded, o, Options{OutFormat: ops.FormatPNG})
+		if err != nil || len(out) == 0 {
+			t.Fatalf("%s: transform failed: %v", name, err)
 		}
 	}
 }

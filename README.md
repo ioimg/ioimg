@@ -65,6 +65,7 @@ Tes: `cd service && go test ./...`.
 | [docs/SECURITY.md](docs/SECURITY.md) | Model ancaman, SSRF, decoder hardening, isolasi tenant, hardening deploy |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Topologi deploy, requirement kernel, observability, SLO, runbook |
 | [docs/COMPETITIVE.md](docs/COMPETITIVE.md) | Peta kompetitor & positioning |
+| [docs/IMGPARITY.md](docs/IMGPARITY.md) | Matriks parity fitur vs imgproxy + prioritas penambahan |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone M0–M4 dengan exit criteria |
 | [docs/RESEARCH-compio.md](docs/RESEARCH-compio.md) | Riset compio/cyper-axum: fakta terverifikasi, koreksi klaim, risk register produksi, 12 eksperimen prasyarat |
 | [poc/README.md](poc/README.md) | **PoC Rust terukur**: server tokio & compio, backend std vs io_uring, hasil benchmark + temuan |
