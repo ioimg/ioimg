@@ -2,13 +2,16 @@ name: service
 
 on:
   push:
+    branches: [main]
     paths:
       - "service/**"
       - ".github/workflows/service-ci.yml"
   pull_request:
+    branches: [main]
     paths:
       - "service/**"
       - ".github/workflows/service-ci.yml"
+  workflow_dispatch:
 
 jobs:
   test:
