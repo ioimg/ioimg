@@ -17,7 +17,3 @@ Thumbs.db
 # Test output
 coverage.out
 *.test
-control.db
-control.db-*
-*.db-shm
-*.db-wal

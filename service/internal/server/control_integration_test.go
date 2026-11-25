@@ -9,31 +9,39 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ioimg/ioimg/service/internal/config"
-	"github.com/ioimg/ioimg/service/internal/control"
-	"github.com/ioimg/ioimg/service/internal/ops"
-	"github.com/ioimg/ioimg/service/internal/sign"
+	"github.com/ioimg/ioimg/service/pkg/ops"
+	"github.com/ioimg/ioimg/service/pkg/sign"
+	"github.com/ioimg/ioimg/service/pkg/tenant"
 )
 
-type controlFixture struct {
-	srv     *httptest.Server
-	store   *control.Store
-	origin  *httptest.Server
-	payload []byte
+// fakeControl implements the control-plane snapshot contract used by the data
+// plane. The real control plane lives in a separate repository; this fixture
+// keeps the data-plane integration test self-contained.
+type fakeControl struct {
+	mu       sync.Mutex
+	revision int64
+	projects map[string]tenant.Project
+	srv      *httptest.Server
+	origin   *httptest.Server
+	payload  []byte
 }
 
-func newControlFixture(t *testing.T) *controlFixture {
+func newFakeControl(t *testing.T) *fakeControl {
 	t.Helper()
-	store, err := control.Open(":memory:", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	api := &control.API{Store: store, Bootstrap: "boot", DataToken: "data"}
-	f := &controlFixture{store: store, srv: httptest.NewServer(api.Handler())}
+	f := &fakeControl{revision: 1, projects: map[string]tenant.Project{}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/config/snapshot", f.handleSnapshot)
+	mux.HandleFunc("/v1/usage", f.handleUsage)
+	mux.HandleFunc("/v1/projects", f.handleProjects)
+	mux.HandleFunc("/v1/projects/", f.handleProject)
+	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 
 	f.payload = jpegBytes(t)
@@ -45,7 +53,110 @@ func newControlFixture(t *testing.T) *controlFixture {
 	return f
 }
 
-func (f *controlFixture) call(t *testing.T, method, path, token string, body any) (*http.Response, []byte) {
+func (f *fakeControl) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	f.mu.Lock()
+	projects := make([]tenant.Project, 0, len(f.projects))
+	for _, p := range f.projects {
+		projects = append(projects, p)
+	}
+	snap := tenant.Snapshot{Revision: f.revision, Projects: projects}
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(snap)
+}
+
+func (f *fakeControl) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	_, _ = io.Copy(io.Discard, r.Body)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		ID             string            `json:"id"`
+		Name           string            `json:"name"`
+		Domains        []string          `json:"domains"`
+		Allowlist      []string          `json:"allowlist"`
+		AllowAnyHost   bool              `json:"allowAnyHost"`
+		SignedOnly     bool              `json:"signedOnly"`
+		ExpiryRequired bool              `json:"expiryRequired"`
+		Presets        map[string]string `json:"presets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	kid, secret := "kid-"+in.ID, "secret-"+in.ID
+	p := tenant.Project{
+		ID:             in.ID,
+		Name:           in.Name,
+		Domains:        in.Domains,
+		Allowlist:      in.Allowlist,
+		AllowAnyHost:   in.AllowAnyHost,
+		SignedOnly:     in.SignedOnly,
+		ExpiryRequired: in.ExpiryRequired,
+		Presets:        in.Presets,
+		SigningKeys:    []tenant.SigningKey{{Kid: kid, Secret: secret}},
+	}
+	f.mu.Lock()
+	f.projects[in.ID] = p
+	f.revision++
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"project": p,
+		"signingKey": map[string]string{
+			"kid":    kid,
+			"secret": secret,
+		},
+	})
+}
+
+func (f *fakeControl) handleProject(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/projects/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[1] != "allowlist" || r.Method != http.MethodPut {
+		http.NotFound(w, r)
+		return
+	}
+	var in struct {
+		Allowlist    []string `json:"allowlist"`
+		AllowAnyHost bool     `json:"allowAnyHost"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	p, ok := f.projects[parts[0]]
+	if ok {
+		p.Allowlist = in.Allowlist
+		p.AllowAnyHost = in.AllowAnyHost
+		f.projects[parts[0]] = p
+		f.revision++
+	}
+	f.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"project": p})
+}
+
+func (f *fakeControl) call(t *testing.T, method, path, token string, body any) (*http.Response, []byte) {
 	t.Helper()
 	var rdr io.Reader
 	if body != nil {
@@ -68,7 +179,7 @@ func (f *controlFixture) call(t *testing.T, method, path, token string, body any
 	return resp, raw
 }
 
-func (f *controlFixture) createProject(t *testing.T, body map[string]any) (kid, secret string) {
+func (f *fakeControl) createProject(t *testing.T, body map[string]any) (kid, secret string) {
 	t.Helper()
 	resp, raw := f.call(t, http.MethodPost, "/v1/projects", "boot", body)
 	if resp.StatusCode != http.StatusCreated {
@@ -111,7 +222,7 @@ func newControlDataPlane(t *testing.T, controlURL string) *Server {
 	return srv
 }
 
-func (f *controlFixture) request(t *testing.T, srv *Server, project, path string) *http.Response {
+func (f *fakeControl) request(t *testing.T, srv *Server, project, path string) *http.Response {
 	t.Helper()
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -127,7 +238,7 @@ func (f *controlFixture) request(t *testing.T, srv *Server, project, path string
 }
 
 func TestMultiTenantControlPlane(t *testing.T) {
-	f := newControlFixture(t)
+	f := newFakeControl(t)
 	originURL, _ := url.Parse(f.origin.URL)
 	originHost := originURL.Hostname()
 

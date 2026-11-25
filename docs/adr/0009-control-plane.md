@@ -2,6 +2,7 @@
 
 - Status: **Accepted** (2026-11-25)
 - Melanjutkan: [ADR-0008](0008-go-data-plane.md)
+- Implementasi: repo private `ioimg/control-plane` (dipisah dari repo data plane)
 
 ## Konteks
 
@@ -19,7 +20,8 @@ memadai untuk self-host satu domain, tetapi tidak untuk SaaS:
 
 ## Keputusan
 
-1. **Control plane terpisah** (`cmd/ioimg-control`, SQLite) menyimpan project,
+1. **Control plane terpisah** (repo `ioimg/control-plane`, `cmd/ioimg-control`,
+   SQLite) menyimpan project,
    signing key (terenkripsi AES-GCM dengan master key), API key (hash),
    allowlist, preset, limit, dan usage bulanan.
 2. **Snapshot pull**: data plane menarik `GET /v1/config/snapshot` setiap

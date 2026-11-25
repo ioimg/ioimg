@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ioimg/ioimg/service/internal/ops"
-	"github.com/ioimg/ioimg/service/internal/sign"
+	"github.com/ioimg/ioimg/service/pkg/ops"
+	"github.com/ioimg/ioimg/service/pkg/sign"
 )
 
 // Config is the immutable runtime configuration.

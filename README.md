@@ -14,13 +14,14 @@ https://acme.ioimg.net/w_800,f_auto,q_auto/https://cdn.acme.com/hero.jpg
 
 `alpha` — desain selesai, **data plane M1 MVP sudah berjalan** di
 [`service/`](service/README.md) (Go): L1+L2 cache (S3/R2), purge CDN fan-out,
-warm/batch API, backend pure Go maupun libvips (`-tags vips`), dan
-**control plane multi-tenant** (SQLite, dashboard, signing endpoint, usage).
+warm/batch API, backend pure Go maupun libvips (`-tags vips`). Control plane
+multi-tenant (SQLite, dashboard, signing endpoint, usage) ada di repo terpisah
+[`ioimg/control-plane`](https://github.com/ioimg/control-plane) (private).
 Billing/payment provider dan hardening produksi masih M2. Lihat
 [ROADMAP](docs/ROADMAP.md).
 
 ```
-service/          # data plane (Go, net/http) + control plane (SQLite) — MVP
+service/          # data plane (Go, net/http) + shared snapshot contract — MVP
 integrations/     # URL builder JS, loader Next.js, plugin WordPress
 research/         # eksperimen terukur: rust-uring, go-fiber (bukan produksi)
 docs/             # PRD, API, arsitektur, keamanan, operasi, ADR
@@ -96,16 +97,22 @@ Tes: `cd service && go test ./...`.
 
 ### Mode multi-tenant
 
+Control plane berada di repo private
+[`ioimg/control-plane`](https://github.com/ioimg/control-plane). Jalankan
+control plane dari repo itu, lalu arahkan data plane:
+
 ```bash
 cd service
-docker compose -f compose.control.yml up --build
-# dashboard: http://localhost:8081 (token demo-bootstrap)
+IOIMG_CONTROL_URL=http://localhost:8081 \
+IOIMG_CONTROL_TOKEN=data \
+IOIMG_ALLOW_PRIVATE=true \
+IOIMG_CACHE_DIR=./cache \
+make run
 ```
 
-Atau lokal: `make run-control` lalu `IOIMG_CONTROL_URL=http://localhost:8081
-IOIMG_CONTROL_TOKEN=data make run`. Detail di
-[`service/README.md`](service/README.md#multi-tenant-control-plane) dan
-[ADR-0009](docs/adr/0009-control-plane.md).
+Kontrak snapshot dan alasannya ada di
+[ADR-0009](docs/adr/0009-control-plane.md). Data plane tidak menyentuh DB
+control plane pada hot path.
 
 ## Lisensi
 

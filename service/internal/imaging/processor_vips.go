@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/pkg/ops"
 
 	vips "github.com/davidbyttow/govips/v2/vips"
 )

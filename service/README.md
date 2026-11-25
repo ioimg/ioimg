@@ -32,8 +32,8 @@ Contoh:
 | L2 cache S3/R2/MinIO (read-through + write-through) | ✅ |
 | Purge lokal + fan-out Cloudflare/Bunny/Fastly | ✅ |
 | Warm/batch API + status job | ✅ |
-| Multi-tenant control plane (projects, keys, allowlist, presets, usage) | ✅ |
-| Signed-URL minting endpoint + embedded dashboard | ✅ |
+| Multi-tenant control plane (repo terpisah `ioimg/control-plane`) | ✅ |
+| Signed-URL minting endpoint + embedded dashboard | ✅ (control plane) |
 | `Vary: Accept`, `Cache-Tag`, `Server-Timing`, error model | ✅ |
 | Metrics, health/ready, purge lokal, rate limit per-IP | ✅ |
 | Quota, billing, project model (butuh control plane) | ⛔ (M2) |
@@ -178,13 +178,12 @@ dan [`../research/go-fiber/README.md`](../research/go-fiber/README.md). Yang rel
 ```
 cmd/ioimg        server
 cmd/ioimgctl     sign / verify / canonical
-internal/ops     parse + canonical + f_auto negotiation
-internal/sign    HMAC, expiry, canonical source
+pkg/ops          parse + canonical + f_auto negotiation (shared contract)
+pkg/sign         HMAC, expiry, canonical source (shared contract)
+pkg/tenant       snapshot types, tenant policy, control client (shared contract)
 internal/source  fetch + SSRF guard
 internal/imaging decode/transform/encode
 internal/cache   L1 disk + L2 S3 + LRU + atomic write
-internal/tenant  snapshot, tenant resolution, control client
-internal/control control plane: SQLite, admin API, signing, dashboard
 internal/purge   Cloudflare/Bunny/Fastly adapters
 internal/server  HTTP contract, errors, metrics, purge
 ```
@@ -269,21 +268,15 @@ dan test kontrak tidak berubah.
 
 ## Multi-tenant control plane
 
-Env-based config is fine for a single self-hosted instance, but not for SaaS:
-every tenant needs its own signing keys, allowlist, presets, and quota. The
-control plane (`cmd/ioimg-control`) stores that in SQLite and serves a snapshot
-to data planes.
+Control plane lives in a separate private repository: **`ioimg/control-plane`**.
+This repository contains only the data plane and the shared snapshot contract
+(`pkg/tenant`, `pkg/ops`, `pkg/sign`). The data plane pulls a snapshot from the
+control plane via `IOIMG_CONTROL_URL` + `IOIMG_CONTROL_TOKEN`; there is no DB in
+the hot path. Contract and rationale: [`../docs/adr/0009-control-plane.md`](../docs/adr/0009-control-plane.md).
+
+Run the data plane against a local control plane:
 
 ```bash
-# 1. control plane
-IOIMG_CONTROL_DB=./control.db \
-IOIMG_CONTROL_MASTER_KEY=$(openssl rand -base64 32) \
-IOIMG_BOOTSTRAP_TOKEN=boot \
-IOIMG_CONTROL_TOKEN=data \
-go run ./cmd/ioimg-control
-# dashboard: http://localhost:8081  (token: boot)
-
-# 2. data plane (no tenant env required)
 IOIMG_CONTROL_URL=http://localhost:8081 \
 IOIMG_CONTROL_TOKEN=data \
 IOIMG_ALLOW_PRIVATE=true \
@@ -291,53 +284,5 @@ IOIMG_CACHE_DIR=./cache \
 go run ./cmd/ioimg
 ```
 
-Create a project (or use the dashboard), then sign URLs without ever shipping
-the HMAC secret to the tenant's app:
-
-```bash
-# tenant API key with scope "sign"
-curl -s -X POST localhost:8081/v1/projects/acme/api-keys \
-  -H 'Authorization: Bearer boot' -H 'Content-Type: application/json' \
-  -d '{"name":"web","scopes":["sign"]}'
-
-# server-side signing endpoint
-curl -s -X POST localhost:8081/v1/projects/acme/sign \
-  -H "Authorization: Bearer ioimg_..." -H 'Content-Type: application/json' \
-  -d '{"ops":"w_800,f_auto,q_auto","source":"https://cdn.acme.com/a.jpg","expiresIn":3600}'
-```
-
-Data plane resolution:
-
-- `Host: img.acme.com` → project whose `domains` contains that host (wildcards
-  `*.acme.com` supported).
-- `X-IOIMG-Project: acme` when `IOIMG_ALLOW_PROJECT_HEADER=true` (local/dev).
-- Unknown host/project → `404 project_not_found`; there is **no** cross-tenant
-  fallback.
-- Snapshot refresh every `IOIMG_CONTROL_SYNC` (default 30s); the last good
-  snapshot survives control-plane downtime.
-- Cache keys and purge/warm keys are namespaced by project.
-- Usage is batched to the control plane every 10s; `X-IOIMG-Quota-Remaining`
-  reflects the snapshot + pending counters.
-
-API summary:
-
-| Endpoint | Auth | Purpose |
-| --- | --- | --- |
-| `GET /v1/projects` | bootstrap | list tenants |
-| `POST /v1/projects` | bootstrap | create + first signing key |
-| `GET/PATCH/DELETE /v1/projects/{id}` | bootstrap or project `read`/`admin` | manage tenant |
-| `GET/POST/DELETE /v1/projects/{id}/signing-keys` | admin | rotation |
-| `POST .../signing-keys/{kid}/reveal` | admin | fetch secret |
-| `GET/PUT .../allowlist`, `.../presets` | read/admin | policy |
-| `GET/POST/DELETE .../api-keys` | read/admin | scoped tokens (`read`,`admin`,`purge`,`sign`) |
-| `POST /v1/projects/{id}/sign` | `sign` | mint signed URL server-side |
-| `GET /v1/projects/{id}/usage` | read | monthly counters |
-| `GET /v1/config/snapshot` | data token | data-plane config |
-| `POST /v1/usage` | data token | usage reports |
-
-The dashboard (embedded, no build step) supports project creation, signing key
-rotation/reveal, API keys, allowlist/presets, usage, and a signed-URL generator.
-
-> **Quota/billing:** usage counters and per-project monthly transform limits
-> are implemented, but invoicing/payment provider integration is not. That needs
-> a billing decision (Stripe, plan tiers, overage) before code.
+The integration test in `internal/server` uses a fake control plane, so this
+repo can be developed and tested without the private control-plane checkout.

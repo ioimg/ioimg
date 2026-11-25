@@ -12,7 +12,7 @@ import (
 	"golang.org/x/image/bmp"
 	"golang.org/x/image/tiff"
 
-	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/pkg/ops"
 )
 
 func testJPEG(t *testing.T) []byte {

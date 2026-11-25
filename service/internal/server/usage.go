@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ioimg/ioimg/service/internal/tenant"
+	"github.com/ioimg/ioimg/service/pkg/tenant"
 )
 
 // usage accumulates per-project counters and reports them to the control
