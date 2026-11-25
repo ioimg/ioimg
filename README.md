@@ -30,6 +30,16 @@ examples/         # demo compose (menyusul)
 artifacts/        # lokal saja, gitignored: dataset, cache, log, snapshot
 ```
 
+## Repositori
+
+| Repo | Isi | Visibilitas |
+| --- | --- | --- |
+| `ioimg/ioimg` | data plane, integrations, research, docs, shared snapshot contract | public (FSL core) |
+| `ioimg/control-plane` | control plane multi-tenant, dashboard, signing, usage/quota | private |
+
+Kontrak antar keduanya ada di `service/pkg/tenant` dan
+[ADR-0009](docs/adr/0009-control-plane.md).
+
 ## Mulai cepat
 
 ```bash
