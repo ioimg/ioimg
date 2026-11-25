@@ -88,8 +88,9 @@ Tes: `cd service && go test ./...`.
 4. **URL path-based + signed HMAC** — cacheable oleh CDN apa pun, tanpa state.
    `f_auto` memakai `Vary: Accept`; CDN yang mengabaikan `Vary` bisa memakai
    format eksplisit.
-5. **Control plane terpisah** (kinstack, Go/Fiber) — auth, API key, billing,
-   admin; data plane tidak boleh melewati rantai middleware dashboard.
+5. **Control plane terpisah secara proses** (`cmd/ioimg-control`, `net/http` +
+   SQLite) — project, API key, signing, usage/quota, dashboard; billing masih
+   M2. Data plane menarik snapshot dan tidak melewati middleware dashboard.
 6. **Infra sebagai adaptor** (`StorageBackend`, `CdnInvalidator`) tetap target
    M2; lihat [ADR-0006](docs/adr/0006-infra-adapters.md).
 
