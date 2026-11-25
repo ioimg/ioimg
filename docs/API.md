@@ -78,8 +78,11 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `rot` | rotate | `90`, `180`, `270` | — | Rotasi kelipatan 90° |
 | `flip` | flip | `h`, `v`, `hv` | — | |
 | `trim` | trim | `1`..`40` (fuzz) | — | Auto-crop border |
-| `strip` | strip metadata | `0`, `1` | 1 | Default membuang EXIF/GPS |
+| `strip` | strip metadata | `0`, `1` | 1 | Default membuang EXIF/GPS; alias `sm` (nama imgproxy). Metadata selalu dibuang, jadi `strip_0`/`sm_0` saat ini sama hasilnya dengan `1` |
 | `enlarge` | allow upscale | `0`, `1` | 0 | |
+| `mw` | minimum width | 1..8192 | — | Hasil yang lebih kecil diperbesar (rasio tetap); boleh dipakai tanpa `w`/`h` |
+| `mh` | minimum height | 1..8192 | — | Sama seperti `mw`; `mw`+`mh` memakai faktor terbesar, lalu di-clamp ke 8192 px |
+| `ar` | auto-rotate dari EXIF | `0`, `1` | 1 | `ar_0` mempertahankan orientasi piksel asli. `ar_0` memaksa jalur resize eksplisit di vips (keluar dari shrink-on-load) |
 | `palette` | PNG palette | `1` | 0 | Kuantisasi 256 warna |
 | `ra` | resampling kernel | `nearest`, `linear`, `cubic`, `lanczos2`, `lanczos3` | `lanczos3` | vips memakai kernel native; pure Go memetakan Lanczos → Catmull-Rom. Selain `lanczos3`, vips keluar dari shrink-on-load (~2× lebih lambat saat MISS) |
 | `mb` | max output bytes | 1024..8388608 | — | Menurunkan `q` sampai hasil muat; hanya untuk format lossy (`jpeg`/`webp`/`avif`), ditolak untuk `png`/`gif`/`json` |
@@ -87,8 +90,10 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `cb` | cache buster | `[A-Za-z0-9_-]{1,64}` | — | Hanya untuk bypass CDN |
 | `sharpen` | alias `sharp` | | | |
 
-`ra`, `mb`, `fn`, `cb` mengikuti penamaan imgproxy supaya migrasi tidak perlu
-menerjemahkan URL.
+`ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm` mengikuti penamaan imgproxy
+supaya migrasi tidak perlu menerjemahkan URL. Nilai default tidak pernah masuk
+canonical form (`ar_1` dan `ra_lanczos3` dinormalkan hilang), jadi cache key dan
+signature URL lama tidak berubah.
 
 #### Cache key vs signature
 
@@ -96,7 +101,8 @@ menerjemahkan URL.
 berbagi satu objek cache dan satu ETag (kalau ikut masuk, `cb` justru membuat
 entri cache baru dan tujuannya hilang). Keduanya **masuk signatur**, jadi token
 `cb` tidak bisa ditempelkan ke URL bertanda tangan tanpa menandatangani ulang.
-`ra` dan `mb` mengubah piksel, jadi keduanya ada di cache key maupun signatur. |
+`ra`, `mb`, `mw`, `mh`, dan `ar_0` mengubah piksel, jadi semuanya ada di cache
+key maupun signatur. |
 
 ### 2.1 Preset
 

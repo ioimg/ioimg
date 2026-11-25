@@ -90,8 +90,10 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 		return Result{}, ErrDecode
 	}
 	defer img.Close()
-	if err := img.AutoRotate(); err != nil {
-		return Result{}, ErrDecode
+	if o.AutoRotates() {
+		if err := img.AutoRotate(); err != nil {
+			return Result{}, ErrDecode
+		}
 	}
 	info := Info{
 		Width:    img.Width(),
@@ -114,6 +116,9 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 
 	start = time.Now()
 	if err := apply(img, o); err != nil {
+		return Result{}, err
+	}
+	if err := enforceMinimumVips(img, o); err != nil {
 		return Result{}, err
 	}
 	timings["transform"] = elapsed(start)
@@ -172,6 +177,9 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	if info.Width > MaxSide || info.Height > MaxSide || info.Width*info.Height > MaxPixels {
 		return Result{}, ErrDimension
 	}
+	if err := enforceMinimumVips(img, o); err != nil {
+		return Result{}, err
+	}
 	res := Result{Info: info}
 	timings := map[string]float64{"transform": elapsed(start)}
 
@@ -194,6 +202,35 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	res.Data = out
 	res.Timings = timings
 	return res, nil
+}
+
+// enforceMinimumVips applies mw_/mh_ by scaling a too-small result up, keeping
+// the aspect ratio.
+func enforceMinimumVips(img *vips.ImageRef, o ops.Ops) error {
+	if o.MinWidth <= 0 && o.MinHeight <= 0 {
+		return nil
+	}
+	w, h := img.Width(), img.Height()
+	if w <= 0 || h <= 0 {
+		return nil
+	}
+	f := 1.0
+	if o.MinWidth > 0 && w < o.MinWidth {
+		f = math.Max(f, float64(o.MinWidth)/float64(w))
+	}
+	if o.MinHeight > 0 && h < o.MinHeight {
+		f = math.Max(f, float64(o.MinHeight)/float64(h))
+	}
+	if f <= 1 {
+		return nil
+	}
+	if math.Round(float64(w)*f) > ops.MaxDimension || math.Round(float64(h)*f) > ops.MaxDimension {
+		f = math.Min(float64(ops.MaxDimension)/float64(w), float64(ops.MaxDimension)/float64(h))
+	}
+	if f <= 1 {
+		return nil
+	}
+	return img.ResizeWithVScale(f, f, kernelFor(o.Algorithm))
 }
 
 // probeDimensions reads only the header: NewImageFromBuffer is lazy, so this
@@ -226,6 +263,11 @@ func thumbnailPlan(src []byte, o ops.Ops, opts Options) (thumbnailOp, bool) {
 		return thumbnailOp{}, false
 	}
 	if opts.OutFormat == ops.FormatJSON {
+		return thumbnailOp{}, false
+	}
+	// vips_thumbnail auto-rotates by default and offers no per-call switch, so
+	// ar_0 must take the explicit path where AutoRotate is skipped.
+	if !o.AutoRotates() {
 		return thumbnailOp{}, false
 	}
 	// vips_thumbnail has no kernel override (only a loader option string), so a

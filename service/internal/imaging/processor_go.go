@@ -16,7 +16,7 @@ func Backend() string { return "go" }
 type pureProcessor struct{}
 
 func (pureProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error) {
-	img, info, err := Decode(src)
+	img, info, err := DecodeWithOptions(src, o)
 	if err != nil {
 		return Result{}, err
 	}

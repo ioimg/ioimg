@@ -44,7 +44,14 @@ func AvailableFormats() map[ops.Format]bool {
 
 // Decode sniffs and decodes an image. Only the first frame of animations is
 // decoded; metadata is deliberately discarded.
-func Decode(data []byte) (image.Image, Info, error) {
+func Decode(data []byte) (image.Image, Info, error) { return decode(data, true) }
+
+// DecodeWithOptions decodes with the request's orientation policy (ar_*).
+func DecodeWithOptions(data []byte, o ops.Ops) (image.Image, Info, error) {
+	return decode(data, o.AutoRotates())
+}
+
+func decode(data []byte, autoRotate bool) (image.Image, Info, error) {
 	if len(data) == 0 {
 		return nil, Info{}, ErrDecode
 	}
@@ -71,7 +78,9 @@ func Decode(data []byte) (image.Image, Info, error) {
 	if decFormat != "" {
 		format = decFormat
 	}
-	img = applyOrientation(img, exifOrientation(data))
+	if autoRotate {
+		img = applyOrientation(img, exifOrientation(data))
+	}
 	info := Info{
 		Width:    img.Bounds().Dx(),
 		Height:   img.Bounds().Dy(),
@@ -111,6 +120,7 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 			return nil, timings, err
 		}
 	}
+	img = enforceMinimum(img, o)
 	if o.Pixelate > 0 {
 		img = pixelate(img, o.Pixelate)
 	}
@@ -232,6 +242,40 @@ func autoQuality(f ops.Format, w, h int) int {
 }
 
 // geometry applies the c_* mode and g_* anchor.
+// enforceMinimum applies mw_/mh_: a result smaller than the requested minimum
+// is enlarged, keeping the aspect ratio.
+func enforceMinimum(img image.Image, o ops.Ops) image.Image {
+	if o.MinWidth <= 0 && o.MinHeight <= 0 {
+		return img
+	}
+	rw, rh := img.Bounds().Dx(), img.Bounds().Dy()
+	if rw <= 0 || rh <= 0 {
+		return img
+	}
+	f := 1.0
+	if o.MinWidth > 0 && rw < o.MinWidth {
+		f = math.Max(f, float64(o.MinWidth)/float64(rw))
+	}
+	if o.MinHeight > 0 && rh < o.MinHeight {
+		f = math.Max(f, float64(o.MinHeight)/float64(rh))
+	}
+	if f <= 1 {
+		return img
+	}
+	nw := int(math.Round(float64(rw) * f))
+	nh := int(math.Round(float64(rh) * f))
+	if nw > ops.MaxDimension || nh > ops.MaxDimension {
+		// Clamp to the hard limit and recompute so the aspect ratio survives.
+		g := math.Min(float64(ops.MaxDimension)/float64(nw), float64(ops.MaxDimension)/float64(nh))
+		nw = int(math.Round(float64(nw) * g))
+		nh = int(math.Round(float64(nh) * g))
+	}
+	if nw <= rw || nh <= rh {
+		return img
+	}
+	return scale(img, nw, nh, o.Algorithm)
+}
+
 func geometry(src image.Image, o ops.Ops) (image.Image, error) {
 	sw, sh := src.Bounds().Dx(), src.Bounds().Dy()
 	tw, th := o.EffectiveWidth(), o.EffectiveHeight()

@@ -107,7 +107,18 @@ type Ops struct {
 	Filename string
 	// Cachebuster is a CDN bypass token: signed, never part of the cache key.
 	Cachebuster string
+	// MinWidth and MinHeight bound the resulting size from below (imgproxy
+	// mw/mh): a smaller result is enlarged, preserving the aspect ratio. Zero
+	// means "no minimum".
+	MinWidth  int
+	MinHeight int
+	// AutoRotate applies the EXIF orientation to the pixels. Nil means the
+	// default (true), so a plain Ops{} keeps the historical behaviour.
+	AutoRotate *bool
 }
+
+// AutoRotates reports whether EXIF orientation should be baked into pixels.
+func (o Ops) AutoRotates() bool { return o.AutoRotate == nil || *o.AutoRotate }
 
 // Default returns the implicit defaults from docs/API.md.
 func Default() Ops {
@@ -337,7 +348,7 @@ func (o *Ops) set(key, value string) error {
 			return fmt.Errorf("trim must be 1..40")
 		}
 		o.Trim = n
-	case "strip":
+	case "strip", "sm":
 		switch value {
 		case "0":
 			v := false
@@ -365,6 +376,29 @@ func (o *Ops) set(key, value string) error {
 			o.Palette = true
 		default:
 			return fmt.Errorf("palette must be 0 or 1")
+		}
+	case "mw":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > MaxDimension {
+			return fmt.Errorf("mw must be an integer between 1 and %d", MaxDimension)
+		}
+		o.MinWidth = n
+	case "mh":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > MaxDimension {
+			return fmt.Errorf("mh must be an integer between 1 and %d", MaxDimension)
+		}
+		o.MinHeight = n
+	case "ar":
+		switch strings.ToLower(value) {
+		case "0", "f", "false":
+			b := false
+			o.AutoRotate = &b
+		case "1", "t", "true":
+			b := true
+			o.AutoRotate = &b
+		default:
+			return fmt.Errorf("ar must be 0 or 1")
 		}
 	case "ra":
 		switch Algorithm(value) {
@@ -421,9 +455,10 @@ func (o *Ops) validate() error {
 			return fmt.Errorf("conflicting geometry")
 		}
 	}
-	if o.Width == 0 && o.Height == 0 && !o.WidthAuto && !o.HeightAuto {
+	if o.Width == 0 && o.Height == 0 && !o.WidthAuto && !o.HeightAuto &&
+		o.MinWidth == 0 && o.MinHeight == 0 {
 		if o.Format == FormatAuto {
-			return fmt.Errorf("at least one of w, h or f is required")
+			return fmt.Errorf("at least one of w, h, mw, mh or f is required")
 		}
 	}
 	if o.Rotate != 0 && o.Flip != "" {
@@ -544,6 +579,15 @@ func (o Ops) Canonical() string {
 	add("c", string(o.Resize))
 	if o.Algorithm != "" && o.Algorithm != AlgoLanczos3 {
 		add("ra", string(o.Algorithm))
+	}
+	if o.MinWidth > 0 {
+		add("mw", strconv.Itoa(o.MinWidth))
+	}
+	if o.MinHeight > 0 {
+		add("mh", strconv.Itoa(o.MinHeight))
+	}
+	if o.AutoRotate != nil && !*o.AutoRotate {
+		add("ar", "0")
 	}
 	if o.MaxBytes != 0 {
 		add("mb", strconv.Itoa(o.MaxBytes))

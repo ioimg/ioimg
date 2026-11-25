@@ -65,8 +65,9 @@ atau service terpisah.
 | Resize dengan algoritma pilihan | ✅ | `ra_nearest/linear/cubic/lanczos2/lanczos3`; vips pakai kernel native, pure Go memetakan Lanczos→Catmull-Rom |
 | Crop & trim | ✅ | `c_crop`, `trim` |
 | Padding | ✅ | `c_pad`, `bg` |
+| Min width / min height | ✅ | `mw`, `mh`: hasil lebih kecil diperbesar, rasio tetap; boleh tanpa `w`/`h` |
 | Extending | 🟡 | via `c_pad`; belum op `extend` terpisah |
-| Rotating | 🟡 | 90/180/270 + auto EXIF; belum sudut arbitrer |
+| Rotating | 🟡 | 90/180/270 + auto EXIF (`ar_0` mematikan auto-rotate); belum sudut arbitrer |
 | Flattening | 🟡 | otomatis untuk JPEG & pad; belum op flatten independen |
 | Flatten background semi-transparan | ⛔ | `bg` hanya `RRGGBB` |
 | Watermark image/text/custom | ⛔ | perlu compositing + font; kandidat M3 |
@@ -88,7 +89,7 @@ atau service terpisah.
 | Auto WebP/AVIF | ✅ | `f_auto` via `Accept` |
 | Auto JPEG XL | ⛔ | menunggu codec |
 | Auto PNG quantization | 🟡 | `palette_1` manual; belum otomatis |
-| Strip metadata | ✅ | default |
+| Strip metadata | ✅ | default; `sm_` alias `strip_` (nama imgproxy). Belum ada mode keep-metadata |
 | Keep copyright saat strip | ⛔ | perlu metadata writer |
 | Strip ICC / konversi sRGB | ✅ | encoder Go/vips membuang profil |
 | Advanced JPEG (mozjpeg) | ⛔ | butuh encoder mozjpeg/libvips |
