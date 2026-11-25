@@ -1,3 +1,9 @@
+# Local-only artifacts: PoC datasets, caches, benchmark output, snapshots
+/artifacts/
+
+# Pi agent local state
+/.pi/
+
 # Build output
 service/bin/
 service/cache/
