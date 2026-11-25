@@ -24,6 +24,11 @@ HIT 17.751 B, 8 keep-alive, cache di ext4, 16 core, 5 putaran round-robin:
 | celeris `std` (bridge net/http) | 23.019 | 330 | 531 | 290 |
 | **celeris `io_uring` + satu fd** | **65.442** | **97** | **149** | **88** |
 
+Angka di atas berasal dari satu jendela round-robin; perbandingan berpasangan
+terhadap prefork ada di [`../benchmarks/io-uring.md`](../benchmarks/io-uring.md)
+§6 — hasilnya **satu proses celeris 79,2k vs Fiber prefork 74,5k**, jadi prefork
+bukan jalur performa.
+
 catatan penting: io_uring untuk **baca cache per-request** tidak selalu kalah.
 Di celeris (loop di-pin) ia rugi 26%; di Fiber justru menang 28% dengan p90
 321 → 173 µs; di `net/http` netral. Karena itu pilihan baca cache harus
@@ -39,8 +44,9 @@ Urutan tier, dipilih otomatis saat start:
 2. **Fiber v3 tanpa prefork + baca cache io_uring** — dipakai bila engine
    io_uring celeris gagal start (kernel < 5.19, `io_uring_setup` diblok untuk
    socket, kebijakan seccomp) tetapi file masih bisa dibaca lewat io_uring.
-3. **Fiber v3 prefork + baca cache satu fd** — dipakai bila io_uring tidak
-   tersedia sama sekali (`IOIMG_CACHE_READ` tetap bisa memaksa mode lain).
+3. **Fiber v3 prefork + baca cache satu fd** — jalur **ketersediaan**: dipakai
+   bila io_uring tidak tersedia sama sekali. Ia lebih lambat 6% dari tier 1
+   (74,5k vs 79,2k) dan memakai 17 proses, jadi bukan pilihan untuk throughput.
 
 `net/http` tetap ada sebagai tier eksplisit (`IOIMG_TRANSPORT=nethttp`) dan
 sebagai referensi/rollback.
@@ -61,8 +67,9 @@ karena tidak mungkin berhasil.
 - Semua transport memakai `Server.dispatch` yang sama, jadi `/healthz`,
   `/readyz`, `/metrics`, `/v1/*` dan penanganan error berperilaku identik di
   ketiga tier; body dan ETag byte-identik (diuji dengan sha256).
-- Prefork memberi 72,7k RPS per host pada tier terakhir, tetapi memecah state
-  per proses; ia sengaja diletakkan paling bawah dan memperingatkan saat aktif.
+- Prefork memecah state per proses dan terukur lebih lambat dari satu proses
+  celeris (74,5k vs 79,2k, p90 146 vs 115 µs); ia sengaja diletakkan paling
+  bawah dan memperingatkan saat aktif.
 - Build tetap jalan tanpa cgo; io_uring diakses lewat `ringo`/celeris (Linux),
   dan probe `UringAvailable()` (membuat ring kecil sekali) membuat binary yang
   sama aman di kernel tanpa io_uring.

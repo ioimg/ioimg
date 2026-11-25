@@ -198,3 +198,32 @@ Kesimpulan yang berubah:
 - Mikro `readbench` di mesin ini memberi urutan terbalik dari §2 (`os` 4.166 ns,
   `uring` 3.523, `linked` 3.607 per baca 16 KB), jadi selisih mikro **tidak**
   bisa dipakai sebagai dasar keputusan; end-to-end yang mengikat.
+
+## 6. Prefork vs satu proses: diukur berpasangan, bukan lintas waktu
+
+Angka prefork (72,7k) dan celeris (65,4k) di §5 datang dari jendela waktu yang
+berbeda, jadi tidak boleh dibandingkan langsung. Diulang berpasangan pada mesin
+yang sama, satu server aktif pada satu waktu, 3 putaran × 3 s, client 8
+keep-alive:
+
+| Konfigurasi | RPS (median) | p50 | p90 | proses |
+| --- | --- | --- | --- | --- |
+| **celeris `io_uring`, 1 proses** | **79.206** | 80 µs | 115 µs | 1 |
+| celeris `io_uring`, 2 proses (SO_REUSEPORT) | 75.415 | 77 µs | 132 µs | 2 |
+| Fiber v3 prefork 16, satu fd | 74.507 | 89 µs | 146 µs | 17 |
+| Fiber v3 1 proses, io_uring cache read | 65.358 | 109 µs | 140 µs | 1 |
+| celeris `io_uring`, 1 proses (ulangan) | 76.620 | 81 µs | 123 µs | 1 |
+
+Kesimpulan:
+
+- **Prefork bukan pemenang throughput.** Satu proses celeris tetap paling cepat
+  (~6% di atas prefork) dan menang di tail (p90 115 vs 146 µs). Prefork hanya
+  menang dibanding Fiber satu proses, karena Fiber satu proses memang lebih
+  lambat.
+- **Dua proses celeris tidak menambah throughput** di sini (75,4k): mesin sudah
+  jenuh oleh kombinasi 16 worker + 8 thread client pada 16 core. Uji scaling
+  proses butuh load generator di host terpisah.
+- Karena itu tier prefork di ADR-0011 tetap ada sebagai **jalur
+  ketersediaan** (io_uring diblok total), bukan sebagai jalur performa. Kalau
+  throughput yang dicari, tambah replika/container dengan celeris, bukan
+  prefork.
