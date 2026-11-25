@@ -125,3 +125,34 @@ per-piksel yang murah. Biayanya ~75% dari MISS: 10,4 → 18,2 ms. Dua opsi:
 
 Keputusan: mulai dari (1). Efek ini Pro di imgproxy dan bukan hot path; kalau
 ada permintaan volume besar untuk efek ini, baru kerjakan (2).
+
+### Gradient dan opsi encoder per format
+
+Sesi terpisah, build `-tags vips`, 1 thread, MISS, sumber 2400×1600 → `w_400`:
+
+| Opsi | rps | p50 |
+| --- | --- | --- |
+| baseline `f_jpg,q_80` | 70 | 10,7 ms |
+| `gr_0.5:000000:down` | 47 | 18,4 ms |
+| `dt_…` / `col_…` (pembanding) | 47 | 18,1–18,4 ms |
+| `f_webp,q_80` (method default 4) | 50 | 17,6 ms |
+| `f_webp,q_80,webpo_6` | 38 | 23,3 ms |
+| `f_avif,q_50` | 7 | 142 ms |
+| `f_avif,q_50,avifo_0` (4:4:4) | 7 | 140 ms |
+| `f_png` | 18 | 52,6 ms |
+| `f_png,pngo_1:1:64` | 21 | 45,7 ms |
+
+- `gr` memakai round-trip vips yang sama dengan `dt`/`col`, jadi biayanya
+  identik (~+75% waktu MISS). HIT tidak terpengaruh (80,5k rps, p50 78 µs).
+- `webpo_compression` benar-benar sampai ke encoder: method 6 = −24% throughput
+  dibanding default 4, dengan output lebih kecil.
+- `avifo_subsample` **tidak** terlihat di vips (govips tidak meneruskan
+  subsample AVIF) — 7 rps pada keduanya, sesuai tabel dukungan di
+  `docs/API.md`. Biaya AVIF didominasi encoder (~140 ms/gambar), bukan opsi.
+- `pngo` di vips hanya menghormati `interlaced`; `quantization_colors` diabaikan
+  (pure Go yang mendukungnya). Selisih 18 → 21 rps di sini adalah noise +
+  interlace, bukan kuantisasi.
+
+Kesimpulan: opsi encoder adalah keputusan kualitas/ukuran, bukan keputusan
+throughput; yang mahal tetap format (AVIF 7 rps, PNG 18–21 rps vs JPEG 70 rps
+pada `w_400`). Cache yang menyelamatkan, bukan kecepatan encode.

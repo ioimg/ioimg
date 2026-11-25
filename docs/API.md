@@ -91,16 +91,37 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `sharpen` | alias `sharp` | | | |
 | `dt` | duotone | `intensity:color1:color2` (0..1; hex 3/6 digit) | `0:000000:ffffff` | Intensitas 0 = mati. `color1` untuk area gelap, `color2` untuk area terang; alias `duotone`. Fitur **Pro** imgproxy |
 | `col` | colorize | `opacity:color:keep_alpha` (0..1; hex; 0/1) | `1:000:0` | Overlay warna rata. `keep_alpha_0` membuat hasil opak; `keep_alpha_1` mempertahankan alpha sumber. Alias `colorize`. Fitur **Pro** imgproxy |
+| `gr` | gradient | `opacity:color:direction:start:stop` (0..1; hex; `down`/`up`/`right`/`left` atau derajat; 0..1) | `1:000:down:0:1` | Overlay transparan→warna. `0` = atas transparan, `90` = kanan transparan (searah jarum jam). Opacity 0 = mati. Fitur **Pro** imgproxy |
+| `pngo` | opsi encoder PNG | `interlaced:quantize:quantization_colors` (0/1; 0/1; 2..256) | — | Semua argumen opsional (`pngo_1`, `pngo_::64`). Fitur **Pro** imgproxy |
+| `webpo` | opsi encoder WebP | `compression:smart_subsample:preset` (0..6; 0/1; 0..5) | — | `compression` = method libwebp / reduction effort libvips. Fitur **Pro** imgproxy |
+| `avifo` | opsi encoder AVIF | `subsample` (0=4:4:4, 1=4:2:2, 2=4:2:0) | — | Fitur **Pro** imgproxy |
 
 `dt` dan `col` dijalankan berurutan (colorize lalu duotone) setelah resize dan
 adjust; keduanya masuk canonical form (dan karena itu cache key + signature)
 karena mengubah piksel. Di backend vips keduanya melakukan satu round-trip
 `ToImage`/`NewImageFromGoImage` per request — hanya saat opsi dipakai.
 
-`ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm`, `dt`, `col` mengikuti penamaan imgproxy
+`gr` ikut round-trip vips yang sama dengan `dt`/`col` (satu `ToImage` per
+request, hanya saat dipakai).
+
+**Dukungan opsi encoder per backend** — yang tidak didukung tidak diam-diam
+diklaim:
+
+| opsi | pure Go | libvips (`-tags vips`) |
+| --- | --- | --- |
+| `pngo` `interlaced` | tidak didukung (encoder Go tidak punya interlace) | ✅ |
+| `pngo` `quantize`/`quantization_colors` | ✅ (`image.Paletted`, kuantisasi seragam) | tidak didukung (govips tidak mengekspos palet) |
+| `webpo` `compression` | ✅ (`libwebp` method 0..6) | ✅ (reduction effort 0..6) |
+| `webpo` `smart_subsample`, `preset` | tidak didukung | tidak didukung |
+| `avifo` `subsample` | ✅ (4:4:4 / 4:2:2 / 4:2:0) | tidak didukung (govips tidak meneruskan subsample AVIF) |
+
+`ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm`, `dt`, `col`, `gr`, `pngo`, `webpo`, `avifo` mengikuti penamaan imgproxy
 supaya migrasi tidak perlu menerjemahkan URL. Nilai default tidak pernah masuk
-canonical form (`ar_1` dan `ra_lanczos3` dinormalkan hilang), jadi cache key dan
-signature URL lama tidak berubah.
+canonical form (`ar_1`, `ra_lanczos3`, `gr_0`, serta argumen `pngo`/`webpo`/
+`avifo` yang tidak diberikan, dinormalkan hilang), jadi cache key dan signature
+URL lama tidak berubah. Opsi encoder dan `gr` **masuk** canonical form karena
+mengubah byte hasil: URL yang sama dengan `webpo` berbeda menghasilkan entri
+cache berbeda, dan signature harus menandatanganinya.
 
 #### Cache key vs signature
 

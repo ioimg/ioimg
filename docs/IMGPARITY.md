@@ -20,7 +20,7 @@ rencana. Item 🟡/⛔ adalah backlog, bukan klaim marketing.
 | Format input luas | 🟡 | +BMP/TIFF; belum JXL/HEIC/ICO/PSD/PDF/video |
 | Filter dasar | ✅ | blur, sharpen, pixelate, brightness, contrast, saturation, monochrome, trim |
 | Watermark | ⛔ | image/text/custom/shadow/rotate belum ada |
-| Transform lanjutan | 🟡 | duotone + colorize ✅ (keduanya **Pro** imgproxy); gradient & chained pipeline belum |
+| Transform lanjutan | 🟡 | duotone, colorize, gradient ✅ (ketiganya **Pro** imgproxy); chained pipeline belum |
 | Smart/AI | ⛔ | smart crop, face crop, object crop/blur, autoquality DSSIM |
 | Keamanan URL | 🟡 | signing + expiry + allowlist + SSRF; belum enkripsi source/hashsum/auth header |
 | Sumber gambar | 🟡 | HTTP(S) saja; S3/GCS/Azure/Swift sebagai *cache*, bukan source |
@@ -110,7 +110,7 @@ Konsekuensinya untuk dokumen ini:
 | Monochrome | ✅ | `mono`, baru |
 | Duotone | ✅ | `dt_intensity:color1:color2`, baru (Pro di imgproxy); 0 = mati |
 | Colorize | ✅ | `col_opacity:color:keep_alpha`, baru (Pro di imgproxy) |
-| Gradient overlay | ⛔ | `gr_` belum; compositing linear |
+| Gradient overlay | ✅ | `gr_opacity:color:direction:start:stop`, baru (Pro di imgproxy) |
 | SVG CSS injection | 🔒 | SVG ditolak |
 | Chained pipelines | ⛔ | butuh parser pipeline; perubahan besar pada cache key |
 
@@ -126,7 +126,9 @@ Konsekuensinya untuk dokumen ini:
 | Keep copyright saat strip | ⛔ | perlu metadata writer |
 | Strip ICC / konversi sRGB | ✅ | encoder Go/vips membuang profil |
 | Advanced JPEG (mozjpeg) | ⛔ | butuh encoder mozjpeg/libvips (Pro di imgproxy) |
-| Advanced WebP options | ⛔ | method/effort/partisi belum diekspos (Pro di imgproxy) |
+| Advanced WebP options | ✅ | `webpo_compression` (method 0..6) di kedua backend; `smart_subsample`/`preset` belum |
+| Advanced PNG options | 🟡 | `pngo_interlaced` (vips saja), `pngo_quantize`/`quantization_colors` (pure Go saja) |
+| Advanced AVIF options | 🟡 | `avifo_subsample` 4:4:4/4:2:2/4:2:0 (pure Go saja; govips tidak meneruskan) |
 | SVG minification | 🔒 | SVG ditolak |
 
 ### 2.4 Smart features
@@ -209,7 +211,8 @@ Konsekuensinya untuk dokumen ini:
 ### Parity pack 2 — sudah ditambahkan di repo ini
 
 - `mw` / `mh` (minimum width/height) dan `ar_0` (auto-rotate off), `sm` alias `strip`.
-- `dt` (duotone) dan `col` (colorize) — keduanya **Pro** di imgproxy.
+- `dt` (duotone), `col` (colorize), `gr` (gradient), `pngo`/`webpo`/`avifo`
+  (opsi encoder per format) — semuanya **Pro** di imgproxy.
 
 ### Parity pack 3 — quick wins berikutnya (1–2 sprint)
 
@@ -217,7 +220,7 @@ Konsekuensinya untuk dokumen ini:
 2. **Custom source headers**: `IOIMG_SOURCE_HEADERS` per host.
 3. **Skip processing / raw streaming**: `raw_1` atau endpoint `/raw/...`.
 4. **Option codec per-format** (`pngo`/`webpo`/`avifo`) — Pro di imgproxy.
-5. **Gradient** (`gr_`) — Pro di imgproxy, murah di pipeline piksel yang sama.
+5. ~~**Gradient** (`gr_`)~~ — selesai (Pro di imgproxy).
 6. **Auto palette PNG**: aktifkan kuantisasi jika ukuran turun.
 7. **Animation frame limit**: batas jumlah frame + fallback statis.
 8. **Source hashsum**: `hs_<sha256>` untuk origin yang tidak ingin di-fetch ulang.

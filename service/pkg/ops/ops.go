@@ -111,6 +111,13 @@ type Ops struct {
 	// features; they never change geometry, only colour.
 	Duotone  Duotone
 	Colorize Colorize
+	// Gradient overlays a colour ramp (imgproxy Pro). Zero opacity = off.
+	Gradient Gradient
+	// Per-format encoder overrides (imgproxy Pro). Nil = encoder default, so
+	// the canonical form of URLs that do not use them is unchanged.
+	PNGEncoder  *PNGEncoder
+	WebPEncoder *WebPEncoder
+	AVIFEncoder *AVIFEncoder
 	// MinWidth and MinHeight bound the resulting size from below (imgproxy
 	// mw/mh): a smaller result is enlarged, preserving the aspect ratio. Zero
 	// means "no minimum".
@@ -341,6 +348,30 @@ func (o *Ops) set(key, value string) error {
 			return err
 		}
 		o.Duotone = d
+	case "gr":
+		g, err := parseGradient(value)
+		if err != nil {
+			return err
+		}
+		o.Gradient = g
+	case "pngo":
+		p, err := parsePNGEncoder(value)
+		if err != nil {
+			return err
+		}
+		o.PNGEncoder = &p
+	case "webpo":
+		w, err := parseWebPEncoder(value)
+		if err != nil {
+			return err
+		}
+		o.WebPEncoder = &w
+	case "avifo":
+		a, err := parseAVIFEncoder(value)
+		if err != nil {
+			return err
+		}
+		o.AVIFEncoder = &a
 	case "col", "colorize":
 		c, err := parseColorize(value)
 		if err != nil {
@@ -611,6 +642,9 @@ func (o Ops) Canonical() string {
 	if o.Colorize.Opacity > 0 {
 		add("col", o.Colorize.canonical())
 	}
+	if o.AVIFEncoder != nil {
+		add("avifo", o.AVIFEncoder.canonical())
+	}
 	if o.Contrast != 0 {
 		add("con", strconv.Itoa(o.Contrast))
 	}
@@ -628,6 +662,9 @@ func (o Ops) Canonical() string {
 		add("flip", o.Flip)
 	}
 	add("g", string(o.Gravity))
+	if !o.Gradient.IsZero() {
+		add("gr", o.Gradient.canonical())
+	}
 	if o.HeightAuto {
 		add("h", "auto")
 	} else if o.Height != 0 {
@@ -638,6 +675,9 @@ func (o Ops) Canonical() string {
 	}
 	if o.Palette {
 		add("palette", "1")
+	}
+	if o.PNGEncoder != nil {
+		add("pngo", o.PNGEncoder.canonical())
 	}
 	if o.Pixelate != 0 {
 		add("pixel", strconv.Itoa(o.Pixelate))
@@ -666,6 +706,9 @@ func (o Ops) Canonical() string {
 		add("w", "auto")
 	} else if o.Width != 0 {
 		add("w", strconv.Itoa(o.Width))
+	}
+	if o.WebPEncoder != nil {
+		add("webpo", o.WebPEncoder.canonical())
 	}
 	return b.String()
 }

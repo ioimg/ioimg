@@ -5,16 +5,20 @@ package imaging
 
 import (
 	"image"
+	"math"
 
 	"github.com/ioimg/ioimg/service/pkg/ops"
 )
 
-// applyColorEffects applies colorize first, then duotone, so the duotone
-// palette sees the colorized luminance. Both are no-ops at intensity/opacity 0.
+// applyColorEffects applies colorize first, then duotone, then the gradient
+// overlay. Colorize runs before duotone so the duotone palette sees the
+// colorized luminance; the gradient sits on top because it is a vignette.
+// Everything is a no-op at intensity/opacity 0.
 func applyColorEffects(src image.Image, o ops.Ops) image.Image {
 	col := o.Colorize
 	dt := o.Duotone
-	if col.Opacity <= 0 && dt.Intensity <= 0 {
+	gr := o.Gradient
+	if col.Opacity <= 0 && dt.Intensity <= 0 && gr.IsZero() {
 		return src
 	}
 
@@ -36,6 +40,22 @@ func applyColorEffects(src image.Image, o ops.Ops) image.Image {
 
 	op := col.Opacity
 	keepAlpha := !(op > 0 && !col.KeepAlpha)
+
+	// Gradient geometry, precomputed once: project each pixel onto the direction
+	// axis and normalise the projection to [0,1] over the image box.
+	var gdx, gdy, gpmin, gspan float64
+	if !gr.IsZero() {
+		rad := gr.Angle() * math.Pi / 180
+		gdx, gdy = -math.Sin(rad), math.Cos(rad)
+		// Projections of the four corners cover the whole box.
+		p00 := 0*gdx + 0*gdy
+		p10 := float64(w-1)*gdx + 0*gdy
+		p01 := 0*gdx + float64(h-1)*gdy
+		p11 := float64(w-1)*gdx + float64(h-1)*gdy
+		gpmin = math.Min(math.Min(p00, p10), math.Min(p01, p11))
+		gpmax := math.Max(math.Max(p00, p10), math.Max(p01, p11))
+		gspan = gpmax - gpmin
+	}
 	for y := range h {
 		for x := range w {
 			so := img.PixOffset(x, y)
@@ -59,6 +79,23 @@ func applyColorEffects(src image.Image, o ops.Ops) image.Image {
 				r = r*(1-dt.Intensity) + p[0]*dt.Intensity
 				g = g*(1-dt.Intensity) + p[1]*dt.Intensity
 				blue = blue*(1-dt.Intensity) + p[2]*dt.Intensity
+			}
+
+			if !gr.IsZero() {
+				t := 0.0
+				if gspan != 0 {
+					t = (float64(x)*gdx + float64(y)*gdy - gpmin) / gspan
+				}
+				ramp := (t - gr.Start) / (gr.Stop - gr.Start)
+				if ramp < 0 {
+					ramp = 0
+				} else if ramp > 1 {
+					ramp = 1
+				}
+				a := ramp * gr.Opacity
+				r = r*(1-a) + float64(gr.Color.R)*a
+				g = g*(1-a) + float64(gr.Color.G)*a
+				blue = blue*(1-a) + float64(gr.Color.B)*a
 			}
 
 			dst.Pix[do] = clamp8(r)

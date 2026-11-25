@@ -188,18 +188,36 @@ func encodeAt(img image.Image, o ops.Ops, format ops.Format, quality int) ([]byt
 	var buf bytes.Buffer
 	switch format {
 	case ops.FormatWebP:
-		if err := webp.Encode(&buf, img, webp.Options{Quality: quality, Method: 4}); err != nil {
+		method := 4
+		if o.WebPEncoder != nil && o.WebPEncoder.Compression != nil {
+			method = *o.WebPEncoder.Compression
+		}
+		if err := webp.Encode(&buf, img, webp.Options{Quality: quality, Method: method}); err != nil {
 			return nil, fmt.Errorf("encode webp: %w", err)
 		}
 	case ops.FormatAVIF:
 		// AVIF goes through the gen2brain WASM encoder.
-		if err := encodeAVIF(&buf, img, quality); err != nil {
+		subsample := image.YCbCrSubsampleRatio420
+		if o.AVIFEncoder != nil && o.AVIFEncoder.Subsample != nil {
+			switch *o.AVIFEncoder.Subsample {
+			case 0:
+				subsample = image.YCbCrSubsampleRatio444
+			case 1:
+				subsample = image.YCbCrSubsampleRatio422
+			}
+		}
+		if err := encodeAVIF(&buf, img, quality, subsample); err != nil {
 			return nil, fmt.Errorf("encode avif: %w", err)
 		}
 	case ops.FormatPNG:
 		enc := png.Encoder{CompressionLevel: png.DefaultCompression}
 		if o.Palette {
 			img = toPaletted(img)
+		}
+		// pngo_: the Go encoder has no interlace option, so only quantize is
+		// honoured here (documented in docs/API.md).
+		if o.PNGEncoder != nil && isTrue(o.PNGEncoder.Quantize) {
+			img = toPalettedN(img, pngColors(o.PNGEncoder.Colors))
 		}
 		if err := enc.Encode(&buf, img); err != nil {
 			return nil, fmt.Errorf("encode png: %w", err)
@@ -721,6 +739,58 @@ func cropRect(src image.Image, r image.Rectangle) image.Image {
 	dst := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	xdraw.Draw(dst, dst.Bounds(), src, r.Min, xdraw.Src)
 	return dst
+}
+
+func isTrue(b *bool) bool { return b != nil && *b }
+
+// pngColors normalises pngo quantization_colors: 0 means the encoder default.
+func pngColors(n int) int {
+	if n < 2 {
+		return 256
+	}
+	if n > 256 {
+		return 256
+	}
+	return n
+}
+
+// toPalettedN quantises to roughly n colours by splitting each channel into
+// k levels where k^3 >= n. It is deliberately simple and deterministic: two
+// processes must produce the same bytes for the same URL and cache key.
+func toPalettedN(src image.Image, n int) image.Image {
+	if n >= 256 {
+		return toPaletted(src)
+	}
+	k := 2
+	for k*k*k < n {
+		k++
+	}
+	step := 255 / (k - 1)
+	if step < 1 {
+		step = 1
+	}
+	levels := make([]uint8, k)
+	for i := range levels {
+		levels[i] = uint8(i * step)
+	}
+	pal := make(color.Palette, 0, k*k*k)
+	for _, r := range levels {
+		for _, g := range levels {
+			for _, b := range levels {
+				pal = append(pal, color.NRGBA{R: r, G: g, B: b, A: 255})
+			}
+		}
+	}
+	b := src.Bounds()
+	img := image.NewPaletted(image.Rect(0, 0, b.Dx(), b.Dy()), pal)
+	idx := func(v uint8) int { return int(v) / step }
+	for y := 0; y < b.Dy(); y++ {
+		for x := 0; x < b.Dx(); x++ {
+			c := color.NRGBAModel.Convert(src.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
+			img.SetColorIndex(x, y, uint8(idx(c.R)*k*k+idx(c.G)*k+idx(c.B)))
+		}
+	}
+	return img
 }
 
 func toPaletted(src image.Image) image.Image {

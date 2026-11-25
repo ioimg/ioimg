@@ -449,7 +449,7 @@ func pixelateVips(img *vips.ImageRef, block int) error {
 // only runs when the URL asks for it, and the result stays identical to the
 // pure-Go path.
 func applyColorEffectsVips(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error) {
-	if o.Colorize.Opacity <= 0 && o.Duotone.Intensity <= 0 {
+	if o.Colorize.Opacity <= 0 && o.Duotone.Intensity <= 0 && o.Gradient.IsZero() {
 		return img, nil
 	}
 	goImg, err := img.ToImage(&vips.ExportParams{})
@@ -591,18 +591,21 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 	if !vips.IsTypeSupported(format) {
 		return nil, fmt.Errorf("unsupported_format: %s", opts.OutFormat)
 	}
-	out, err := exportAt(img, format, quality)
+	out, err := exportAt(img, format, quality, o)
 	if err != nil {
 		return nil, fmt.Errorf("encode %s: %w", opts.OutFormat, err)
 	}
 	if o.MaxBytes <= 0 || !lossy(opts.OutFormat) || len(out) <= o.MaxBytes {
 		return out, nil
 	}
-	return fitBytesVips(img, format, o.MaxBytes, quality, out)
+	return fitBytesVips(img, format, o, o.MaxBytes, quality, out)
 }
 
-func exportAt(img *vips.ImageRef, format vips.ImageType, quality int) ([]byte, error) {
-	out, _, err := img.Export(&vips.ExportParams{
+// exportAt maps the per-format encoder overrides onto libvips. Only the knobs
+// libvips actually exposes are applied (PNG interlace, WebP effort); the rest
+// are documented as pure-Go-only in docs/API.md.
+func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops) ([]byte, error) {
+	params := &vips.ExportParams{
 		Format:        format,
 		Quality:       quality,
 		Compression:   6,
@@ -610,7 +613,14 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int) ([]byte, e
 		StripMetadata: true,
 		Effort:        4,
 		Speed:         8,
-	})
+	}
+	if o.PNGEncoder != nil && o.PNGEncoder.Interlaced != nil {
+		params.Interlaced = *o.PNGEncoder.Interlaced
+	}
+	if o.WebPEncoder != nil && o.WebPEncoder.Compression != nil {
+		params.Effort = *o.WebPEncoder.Compression
+	}
+	out, _, err := img.Export(params)
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +629,7 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int) ([]byte, e
 
 // fitBytesVips mirrors fitBytes: highest quality that fits the mb_ budget, and
 // never an error when nothing fits.
-func fitBytesVips(img *vips.ImageRef, format vips.ImageType, maxBytes, startQuality int, first []byte) ([]byte, error) {
+func fitBytesVips(img *vips.ImageRef, format vips.ImageType, o ops.Ops, maxBytes, startQuality int, first []byte) ([]byte, error) {
 	// A buffer-backed vips image is streamed sequentially: the first export
 	// consumes it, so a second export fails with "out of order read". The search
 	// needs repeatable reads, so materialise the pixels once.
@@ -640,7 +650,7 @@ func fitBytesVips(img *vips.ImageRef, format vips.ImageType, maxBytes, startQual
 	lo, hi := minQuality, startQuality-1
 	for i := 0; i < maxQualityProbes && lo <= hi; i++ {
 		mid := (lo + hi) / 2
-		cand, err := exportAt(img, format, mid)
+		cand, err := exportAt(img, format, mid, o)
 		if err != nil {
 			return nil, err
 		}
@@ -655,7 +665,7 @@ func fitBytesVips(img *vips.ImageRef, format vips.ImageType, maxBytes, startQual
 		return best, nil
 	}
 	smallest := first
-	if floor, err := exportAt(img, format, minQuality); err == nil && len(floor) < len(smallest) {
+	if floor, err := exportAt(img, format, minQuality, o); err == nil && len(floor) < len(smallest) {
 		smallest = floor
 	}
 	return smallest, nil

@@ -12,10 +12,11 @@ import (
 
 // encodeAVIF lives in its own file so the heavy WASM encoder is easy to find
 // and to replace with a native libavif binding in a future build tag.
-func encodeAVIF(buf *bytes.Buffer, img image.Image, quality int) error {
+func encodeAVIF(buf *bytes.Buffer, img image.Image, quality int, subsample image.YCbCrSubsampleRatio) error {
 	return avif.Encode(buf, img, avif.Options{
-		Quality: quality,
-		Speed:   9, // 0..10; 9 keeps latency reasonable for an on-demand proxy
+		Quality:           quality,
+		Speed:             9, // 0..10; 9 keeps latency reasonable for an on-demand proxy
+		ChromaSubsampling: subsample,
 	})
 }
 
