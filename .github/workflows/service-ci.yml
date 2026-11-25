@@ -3,6 +3,7 @@ name: service
 on:
   push:
     branches: [main]
+    tags-ignore: ["**"]
     paths:
       - "service/**"
       - ".github/workflows/service-ci.yml"
