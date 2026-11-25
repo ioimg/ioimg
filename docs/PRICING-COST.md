@@ -206,3 +206,75 @@ options, watermark).
 2. Jalankan fase 1 topologi (dua Deployment) di 1× AX42 + 1× Vultr Jakarta.
 3. Ukur egress nyata 2 minggu, lalu kunci angka "included bandwidth" di plan.
 4. Baru buka pendaftaran Free dengan cap 10 GB dan antrean prioritas rendah.
+
+---
+
+## 7. Rencana low-cost: adopsi dulu, margin kemudian
+
+Kesimpulan dari model di atas: dengan Cloudflare/R2 di depan, **egress = $0** dan
+biaya marginal per gambar tinggal compute ($0,07–0,73 per juta gambar). Artinya
+harga tidak perlu disandera bandwidth — yang mahal justru (a) AVIF, (b) abuse,
+(c) support. Maka strategi "harga murah, adopsi besar" masuk akal secara
+ekonomi, dengan tiga syarat di §7.4.
+
+### 7.1 Infrastruktur fase adopsi: satu kotak, ±$10/bulan
+
+| Item | Pilihan | Biaya |
+| --- | --- | --- |
+| Control plane + Postgres + worker Free (satu box) | **Biznet Gio NEO Lite 2C/4 GB** (Rp139.000, Jakarta) | ~$8,6 |
+| alternatif | Hetzner CX23 2C/4 GB (EU, €5,99) | ~$6,5 |
+| L2 cache | R2 **free tier** (10 GB, 1 jt Class A, 10 jt Class B) | $0 |
+| CDN/DNS/TLS | Cloudflare Free | $0 |
+| Backup | R2 (di paket yang sama) | $0 |
+| **Total** | | **±$9–10** |
+
+Kapasitas kotak ini: HIT >20k rps (bukan bottleneck), MISS JPEG ~50–80/s pada
+2 vCPU shared. Itu ~4–7 juta transform/hari — jauh di atas kebutuhan ratusan
+pelanggan pertama. **Tidak perlu** Vultr $96 atau AX42 €99 sebelum ada
+pelanggan yang membayar untuk itu.
+
+Naik tangga hanya kalau angka memaksa: worker Free tetap 1 kotak, worker Pro
+dipisah saat ada ≥20 pelanggan berbayar, dan pool Pro dipecah per region saat
+p95 MISS >250 ms.
+
+### 7.2 Harga dalam IDR (anchor: imgproxy Pro $49 ≈ Rp800rb/bulan)
+
+| Tier | Harga | Kuota | Fitur | Biaya layanan (estimasi) | Margin |
+| --- | --- | --- | --- | --- | --- |
+| **Free** | Rp0 | 5 GB, 50 rb req, 1 domain | JPEG/WebP, tanpa AVIF/watermark | ~Rp300 | — (akuisisi) |
+| **Starter** | **Rp 29 rb** | 25 GB, 250 rb req | + AVIF, 3 domain | ~Rp600 | ~97% |
+| **Pro** | **Rp 99 rb** | 150 GB, 2 jt req | + watermark, custom domain, purge API, 99,5% | ~Rp2.000 | ~97% |
+| **Business** | **Rp 299 rb** | 750 GB, 10 jt req | + pool terpisah, SLA 99,9%, webhook | ~Rp8.000 | ~96% |
+
+Overage Rp 50/GB (setara $0,003/GB — masih di bawah Bunny volume $0,005).
+
+Perbandingan yang bisa dipakai di landing page: imgproxy Pro **Rp800rb** untuk 16
+worker; ioimg Pro **Rp99rb** termasuk CDN. Cloudinary/ImageKit kelas $49–99.
+
+### 7.3 Apa yang harus dimatikan di tier murah (cost control, bukan fitur)
+
+1. **AVIF di Free/Starter.** MISS AVIF 142 ms vs JPEG 10,3 ms = **14× CPU**;
+   satu pengguna AVIF setara 14 pengguna JPEG. Aktifkan di Pro ke atas, dan
+   batasi `q` maksimum untuk AVIF.
+2. **Watermark** (round-trip + composite) di Pro ke atas — 1,7× biaya MISS.
+3. **`dpr_` > 2 dan `w_` > 4096** di Free; `MaxSide` 4096 px, 12 MP.
+4. **Transform tanpa cache**: tolak `cb_` unik berlebihan dari satu proyek
+   (cache-buster abuse = MISS tak terbatas). Batas MISS/proyek/menit.
+
+### 7.4 Tiga syarat sebelum Free dibuka lebar
+
+1. **Admission control per proyek** (sekarang limiter per-IP): batas MISS/menit
+   per project ID, ditolak dengan 429 + `Retry-After`, bukan dengan menambah
+   worker.
+2. **Metering durabel**: spool lokal di worker + retry, idempoten per
+   `(project, jam)`. Kalau ini tidak ada, Free akan menghabiskan kuota tanpa
+   tercatat dan tidak ada dasar untuk upsell.
+3. **Domain kustom & TLS**: tanpa ini, pelanggan Indonesia tidak bisa memakai
+   `img.tokonya.id`, dan itu alasan nomor satu orang membayar.
+
+### 7.5 Kapan menaikkan harga
+
+Jangan naikkan harga; naikkan **kuota** sambil mempertahankan harga sampai
+konversi Free→Starter >3%. Yang dinaikkan setelah itu adalah tier atas (Business
+ke atas), bukan Starter — pelanggan Indonesia sensitif pada harga masuk, bukan
+pada batas pemakaian.
