@@ -13,3 +13,5 @@ Format ringkas: **Konteks → Keputusan → Konsekuensi → Alternatif yang dito
 | [0007](0007-axum-on-compio.md) | `axum` di atas `compio` (`cyper-axum`) sebagai fast path | Rejected by 0008 |
 | [0008](0008-go-data-plane.md) | Data plane Go (`net/http`), imaging pure Go + jalur libvips, cache disk L1 | Accepted |
 | [0009](0009-control-plane.md) | Control plane multi-tenant, snapshot pull, signing endpoint, dashboard | Accepted |
+| [0010](0010-io-uring-scope.md) | Cakupan io_uring: socket + batch job, baca cache per-request tetap blocking | Accepted |
+| [0011](0011-transport-selection.md) | Transport default celeris `io_uring`, fallback Fiber (io_uring) → Fiber prefork + satu fd | Accepted |

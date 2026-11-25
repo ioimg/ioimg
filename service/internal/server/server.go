@@ -175,41 +175,45 @@ func New(cfg config.Config, o Options) (*Server, error) {
 // and redirects "//" to "/", which corrupts the source URL embedded in
 // /{sig}/{ops}/https://host/path. The switch below keeps the raw path intact.
 func (s *Server) Handler() http.Handler {
-	return s.withRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/healthz":
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte("ok"))
-		case "/readyz":
-			s.handleReady(w, r)
-		case "/metrics":
-			s.handleMetrics(w, r)
-		case "/v1/stats":
-			s.handleStats(w, r)
-		case "/v1/purge":
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			s.handlePurge(w, r)
-		case "/v1/warm":
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			s.handleWarm(w, r)
-		default:
-			if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
-				s.handleJob(w, r)
-				return
-			}
-			s.handleImage(w, r)
+	return s.withRecovery(http.HandlerFunc(s.dispatch))
+}
+
+// dispatch routes one request. Every transport (net/http, celeris, fiber) calls
+// it, so the operational endpoints behave the same on all of them.
+func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/healthz":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
 		}
-	}))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok"))
+	case "/readyz":
+		s.handleReady(w, r)
+	case "/metrics":
+		s.handleMetrics(w, r)
+	case "/v1/stats":
+		s.handleStats(w, r)
+	case "/v1/purge":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		s.handlePurge(w, r)
+	case "/v1/warm":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleWarm(w, r)
+	default:
+		if strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
+			s.handleJob(w, r)
+			return
+		}
+		s.handleImage(w, r)
+	}
 }
 
 func (s *Server) withRecovery(next http.Handler) http.Handler {
@@ -670,3 +674,12 @@ func buildDefaultPolicy(cfg config.Config) *tenant.Policy {
 	}
 	return tenant.NewPolicy(p)
 }
+
+// SetCacheReadMode switches the L1 read path at runtime. The transport selector
+// uses it because the best read mode depends on the engine: pinned event loops
+// (celeris) want blocking one-fd reads, goroutine-per-connection transports
+// (fiber) do better with io_uring.
+func (s *Server) SetCacheReadMode(m cache.ReadMode) { s.cache.SetReadMode(m) }
+
+// CacheReadMode reports the resolved L1 read mode.
+func (s *Server) CacheReadMode() string { return s.cache.ReadMode() }

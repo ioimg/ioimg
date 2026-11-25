@@ -3,18 +3,17 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/ioimg/ioimg/service/internal/cache"
 	"github.com/ioimg/ioimg/service/internal/config"
 	"github.com/ioimg/ioimg/service/internal/server"
+	"github.com/ioimg/ioimg/service/internal/transport"
 )
 
 // version is injected with -ldflags "-X main.version=...".
@@ -42,17 +41,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpSrv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       90 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	logger.Info("ioimg listening",
+	logger.Info("ioimg starting",
 		"addr", cfg.Addr,
 		"version", version,
 		"signed_only", cfg.SignedOnly,
@@ -61,30 +53,14 @@ func main() {
 		"cache_max_bytes", cfg.CacheMaxBytes,
 		"control_url", cfg.ControlURL,
 		"concurrency", cfg.Concurrency,
+		"io_uring_available", cache.UringAvailable(),
 	)
 
-	errCh := make(chan error, 1)
-	go func() {
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	select {
-	case err := <-errCh:
+	if err := transport.Serve(ctx, srv, cfg, logger); err != nil {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
-	case sig := <-sigCh:
-		logger.Info("shutting down", "signal", sig.String())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := httpSrv.Shutdown(ctx); err != nil {
-		logger.Error("shutdown failed", "error", err)
-		os.Exit(1)
-	}
+	logger.Info("shutdown complete")
 }
 
 func newLogger(cfg config.Config) *slog.Logger {
