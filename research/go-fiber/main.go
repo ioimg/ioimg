@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"ioimg-poc-go/internal/ioimg"
+	"github.com/ioimg/ioimg/research/go-fiber/internal/ioimg"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -31,8 +31,8 @@ type app struct {
 func main() {
 	mode := flag.String("mode", "fiber", "fiber|http")
 	addr := flag.String("addr", ":8080", "listen address")
-	src := flag.String("src", "../poc/data/src", "direktori sumber")
-	cache := flag.String("cache", "../poc/data/cache-go", "direktori cache")
+	src := flag.String("src", "../../artifacts/datasets/src", "direktori sumber")
+	cache := flag.String("cache", "../../artifacts/cache/go", "direktori cache")
 	prefork := flag.Bool("prefork", false, "aktifkan SO_REUSEPORT prefork (fiber)")
 	filter := flag.String("filter", "catmullrom", "catmullrom|bilinear")
 	nocache := flag.Bool("nocache", false, "selalu transform, tanpa cache (untuk ukur kapasitas CPU)")

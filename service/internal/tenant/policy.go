@@ -4,8 +4,8 @@ package tenant
 import (
 	"strings"
 
-	"ioimg/internal/ops"
-	"ioimg/internal/sign"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/sign"
 )
 
 // Limits are the soft quotas a project may enforce.

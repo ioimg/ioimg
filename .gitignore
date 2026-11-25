@@ -1,4 +1,4 @@
-# Local-only artifacts: PoC datasets, caches, benchmark output, snapshots
+# Local-only artifacts: datasets, caches, benchmark output, snapshots
 /artifacts/
 
 # Pi agent local state
@@ -8,6 +8,8 @@
 service/bin/
 service/cache/
 service/.cache-test/
+research/rust-uring/target/
+research/go-fiber/bin/
 *.exe
 
 # Local env / secrets
@@ -15,15 +17,9 @@ service/.cache-test/
 .env.*
 !.env.example
 
-# PoC build output
-poc/target/
-poc-go/bin/
-bench-kinstack/node_modules/
-bench-kinstack/public/build/
-bench-kinstack/tmp/
-
 # Session logs
 last-ai-session.jsonl
+*.log
 
 # Editor / OS
 .DS_Store
@@ -31,12 +27,5 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Benchmark copy: generated binaries, logs, secrets, frontend build
-bench-kinstack/.env
-bench-kinstack/.env.*
-bench-kinstack/storage/
-bench-kinstack/build/
-bench-kinstack/public/build/
-bench-kinstack/tmp/
-bench-kinstack/node_modules
+# Local storage
 storage/

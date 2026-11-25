@@ -15,13 +15,13 @@ sinkron (+50% CPU) dan session+CSRF yang menulis **2 key Valkey per request**
 
 ## 1. Setup
 
-`kinstack` **tidak diubah**. Repo asli di `~/Projects/work/oss/kinstack` hanya
-di-`rsync` ke `bench-kinstack/` (tanpa `node_modules`, `.git`, `public/build`),
+`kinstack` **tidak diubah**. Repo asli di `~/Projects/work/oss/kinstack` disalin
+ke `artifacts/snapshots/kinstack/` (gitignored) lewat `tools/fetch-kinstack.sh`,
 lalu tambahan bench ditambahkan **di salinan**:
 
-| File di `bench-kinstack/` | Isi |
+| File di `artifacts/snapshots/kinstack/` | Isi |
 | --- | --- |
-| `internal/benchioimg/` | handler ioimg PoC, disalin apa adanya dari `poc-go/internal/ioimg` (URL/ops/cache key identik) |
+| `internal/benchioimg/` | handler ioimg PoC, disalin apa adanya dari `research/go-fiber/internal/ioimg` (URL/ops/cache key identik) |
 | `cmd/ioimgkstack/` | mount handler ke app kinstack yang asli (`bootstrap.Run`) |
 | `cmd/ioimgv3/` | baseline Fiber v3 polos, tanpa middleware kinstack |
 | `internal/bootstrap/{app,bootstrap,middleware,middleware_security}.go` | hook `ExtraRoutes`, `KSTACK_EARLY_ROUTES`, dan toggle `KSTACK_SKIP_*` untuk atribusi |
@@ -36,7 +36,7 @@ Config dipakai apa adanya dari `.env` kinstack; hanya `MEDIA_ENABLED=false`,
 dimatikan agar tidak ada trafik keluar saat bench.
 
 Beban kerja: `GET /w_400,f_jpg,q_80/photo00.jpg` → **HIT, 17.751 byte**
-(salinan persis benchmark PoC). Client: `poc/target/release/bench`, 8 koneksi
+(salinan persis benchmark PoC). Client: `research/rust-uring/target/release/bench`, 8 koneksi
 keep-alive.
 
 ## 2. Metodologi
@@ -131,7 +131,7 @@ murah — justru traffic mayoritas produk image proxy (hit ratio 95–99%).
 
 | Konfigurasi (1 proses, HIT) | cpu/req | RPS |
 | --- | --- | --- |
-| Fiber **v2** (PoC `poc-go`) | 132 µs | 47.333 |
+| Fiber **v2** (PoC `research/go-fiber`) | 132 µs | 47.333 |
 | Fiber **v3** (baseline) | 125 µs | 51.560 |
 
 v3 ~9% lebih cepat dari v2 pada beban sama — versi framework bukan faktor.
@@ -197,10 +197,9 @@ HTTP stack.
 
 ```bash
 # 1. salinan starterkit + tambahan bench (repo asli tidak disentuh)
-rsync -a --exclude node_modules --exclude .git --exclude public/build \
-  ~/Projects/work/oss/kinstack/ ~/Projects/work/saas/ioimg/bench-kinstack/
-cd ~/Projects/work/saas/ioimg/bench-kinstack
-patch -p1 < ../docs/BENCH-kinstack.patch      # hook ExtraRoutes + toggle KSTACK_*
+tools/fetch-kinstack.sh ~/Projects/work/oss/kinstack
+cd artifacts/snapshots/kinstack
+patch -p1 < ../../../docs/BENCH-kinstack.patch  # hook ExtraRoutes + toggle KSTACK_*
 ln -s ~/Projects/work/oss/kinstack/node_modules node_modules && bun x vite build
 
 # 2. infra
@@ -221,10 +220,10 @@ APP_PORT=18081 DATABASE_URL=... VALKEY_PORT=56379 \
 VALKEY_PASSWORD=kinstack-local-password MEDIA_ENABLED=false \
 UMAMI_ENABLED=false OPENOBSERVE_ENABLED=false GLITCHTIP_DSN= \
 KSTACK_EARLY_ROUTES=1 /tmp/ioimgkstack \
-  -src ../poc/data/src -cache ../poc/data/cache-go
+  -src ../../../artifacts/datasets/src -cache ../../../artifacts/cache/go
 
-/tmp/ioimgv3 -addr :18080 -src ../poc/data/src -cache ../poc/data/cache-go
-../poc/target/release/bench 127.0.0.1:18081 /w_400,f_jpg,q_80/photo00.jpg 8 3
+/tmp/ioimgv3 -addr :18080 -src ../../../artifacts/datasets/src -cache ../../../artifacts/cache/go
+../../../research/rust-uring/target/release/bench 127.0.0.1:18081 /w_400,f_jpg,q_80/photo00.jpg 8 3
 ```
 
 Toggle yang tersedia di salinan: `KSTACK_EARLY_ROUTES`, `KSTACK_SKIP_LOG`,

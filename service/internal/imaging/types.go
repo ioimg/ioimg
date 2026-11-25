@@ -3,7 +3,7 @@ package imaging
 import (
 	"errors"
 
-	"ioimg/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/ops"
 )
 
 // ErrDecode is returned when the payload is not a supported image.

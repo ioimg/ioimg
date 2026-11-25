@@ -1,0 +1,13 @@
+# Enterprise / Commercial License
+
+The Functional Source License in [`LICENSE`](LICENSE) covers the core of
+ioimg. It does **not** cover files or features explicitly marked as
+enterprise, commercial-only, or hosted-service-only.
+
+Enterprise features and commercial self-hosted licenses are available under a
+separate written agreement. Without that agreement, you may not use those
+features in production.
+
+Contact: hello@ioimg.net
+
+This file is a notice, not the commercial license itself.

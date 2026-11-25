@@ -8,7 +8,7 @@
 Kontrak HTTP publik. Versi dokumen: 1.0.
 
 Base URL contoh:
-- Managed: `https://<project>.ioimg.dev`
+- Managed: `https://<project>.ioimg.net`
 - Self-host: `http://localhost:8080` atau domain sendiri
 
 ---
@@ -142,7 +142,7 @@ Aturan:
 ```ts
 const canonical = `${ops}/${source}?exp=${exp}`;
 const sig = base64url(hmacSha256(secret, canonical));   // 43 chars
-const url = `https://acme.ioimg.dev/${sig}/${ops}/${source}?exp=${exp}`;
+const url = `https://acme.ioimg.net/${sig}/${ops}/${source}?exp=${exp}`;
 ```
 
 ## 5. Header response
@@ -173,7 +173,7 @@ Semua error non-gambar mengembalikan JSON (kecuali `Accept: image/*` yang memint
     "code": "source_not_allowed",
     "message": "Host 'internal.corp' is not in the allowlist for project 'acme'.",
     "request_id": "01HQ8Y...",
-    "docs": "https://ioimg.dev/docs/errors#source_not_allowed"
+    "docs": "https://ioimg.net/docs/errors#source_not_allowed"
   }
 }
 ```
@@ -228,7 +228,7 @@ Purge menghapus L1/L2 ioimg **dan** memanggil API CDN yang dikonfigurasi untuk p
 
 ```json
 POST /v1/purge
-{ "urls": ["https://acme.ioimg.dev/w_800,f_auto/https://cdn.acme.com/a.jpg"],
+{ "urls": ["https://acme.ioimg.net/w_800,f_auto/https://cdn.acme.com/a.jpg"],
   "tags": ["src:a1b2c3"], "all": false }
 ```
 
@@ -244,7 +244,7 @@ Catatan: CloudFront invalidation berbiaya & lambat → strategi utama untuk aset
 
 ## 8. Admin API (control plane)
 
-Base: `https://api.ioimg.dev/v1`
+Base: `https://api.ioimg.net/v1`
 
 | Method | Path | Keterangan |
 | --- | --- | --- |
@@ -264,7 +264,7 @@ Contoh create project:
 POST /v1/projects
 {
   "name": "Acme Store",
-  "hosts": ["acme.ioimg.dev"],
+  "hosts": ["acme.ioimg.net"],
   "allowlist": ["cdn.acme.com", "*.acme.com"],
   "signing": { "mode": "signed", "expiryRequired": true },
   "limits": { "concurrency": 32, "monthlyTransforms": 5000000, "monthlyEgressGb": 2048 }

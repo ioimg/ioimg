@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ioimg/internal/purge"
+	"github.com/ioimg/ioimg/service/internal/purge"
 )
 
 type fakeL2 struct {

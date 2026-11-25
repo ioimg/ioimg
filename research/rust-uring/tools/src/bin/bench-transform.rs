@@ -4,7 +4,7 @@ use poc_core::{Ops, Format};
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "data/src/photo00.jpg".into());
+    let path = std::env::args().nth(1).unwrap_or_else(|| "../../artifacts/datasets/src/photo00.jpg".into());
     let src = std::fs::read(&path)?;
     println!("sumber: {path} ({} KiB)", src.len() / 1024);
     {

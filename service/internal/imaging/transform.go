@@ -17,7 +17,7 @@ import (
 	"math"
 	"strings"
 
-	"ioimg/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/ops"
 
 	_ "github.com/gen2brain/avif"
 	webp "github.com/gen2brain/webp"

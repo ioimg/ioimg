@@ -23,7 +23,7 @@ dataset: JPEG sintetis 2400x1600 (~360 KiB), 8 file
 
 ```bash
 cargo build --release
-./target/release/gen-images data/src 8 2400 1600
+./target/release/gen-images ../../artifacts/datasets/src 8 2400 1600
 IOIMG_PORT=8080 IOIMG_IO=uring ./target/release/ioimg-poc-tokio
 curl -D- 'localhost:8080/w_400,f_jpeg/photo00.jpg'      # MISS lalu HIT
 curl -D- 'localhost:8080/w_300,h_300,fit_cover,f_png/photo01.jpg'
@@ -122,7 +122,7 @@ Kesimpulan yang sama seperti sebelumnya, sekarang dengan data yang stabil: **pus
 
 ## 6b. Pembanding Go + libvips
 
-Lihat [`../poc-go/README.md`](../poc-go/README.md). Ringkas (median 3 run, dataset & harness sama):
+Lihat [`../go-fiber/README.md`](../go-fiber/README.md). Ringkas (median 3 run, dataset & harness sama):
 
 | Pipeline transform (2400×1600 → w400 JPEG q80) | ms/gambar | img/s/core |
 | --- | --- | --- |

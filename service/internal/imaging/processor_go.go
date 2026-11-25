@@ -3,7 +3,7 @@
 package imaging
 
 import (
-	"ioimg/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/ops"
 )
 
 // DefaultProcessor returns the pure-Go pipeline.

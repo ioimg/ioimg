@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"ioimg/internal/config"
-	"ioimg/internal/ops"
-	"ioimg/internal/sign"
+	"github.com/ioimg/ioimg/service/internal/config"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/sign"
 )
 
 func jpegBytes(t *testing.T) []byte {

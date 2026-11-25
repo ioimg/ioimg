@@ -62,7 +62,7 @@ go build -o bin/ioimg ./cmd/ioimg
 go build -o bin/ioimgctl ./cmd/ioimgctl
 
 # terminal 1: origin statis (contoh memakai bun; apa pun bisa)
-bun -e "const http=require('http'),fs=require('fs');http.createServer((q,s)=>{fs.readFile('../poc/data/src'+q.url,(e,d)=>{e?(s.writeHead(404),s.end()):(s.writeHead(200,{'Content-Type':'image/jpeg'}),s.end(d))})}).listen(8099)"
+bun -e "const http=require('http'),fs=require('fs');http.createServer((q,s)=>{fs.readFile('../artifacts/datasets/src'+q.url,(e,d)=>{e?(s.writeHead(404),s.end()):(s.writeHead(200,{'Content-Type':'image/jpeg'}),s.end(d))})}).listen(8099)"
 
 # terminal 2: ioimg
 IOIMG_ALLOW_ANY_HOST=true IOIMG_ALLOW_PRIVATE=true \
@@ -161,7 +161,7 @@ Header respons mengikuti `docs/API.md §5`: `Content-Type`, `Content-Length`,
 ## Catatan performa
 
 Angka bench ada di [`../docs/BENCH-GO-STARTERKIT.md`](../docs/BENCH-GO-STARTERKIT.md)
-dan [`../poc-go/README.md`](../poc-go/README.md). Yang relevan untuk service ini:
+dan [`../research/go-fiber/README.md`](../research/go-fiber/README.md). Yang relevan untuk service ini:
 
 - Data plane sengaja **tidak** memakai session/CSRF/Inertia/access-log sinkron.
   Jalur HIT hanya parse → baca disk → tulis response.

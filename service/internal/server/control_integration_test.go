@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"ioimg/internal/config"
-	"ioimg/internal/control"
-	"ioimg/internal/ops"
-	"ioimg/internal/sign"
+	"github.com/ioimg/ioimg/service/internal/config"
+	"github.com/ioimg/ioimg/service/internal/control"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/sign"
 )
 
 type controlFixture struct {

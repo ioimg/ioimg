@@ -1,4 +1,4 @@
-module ioimg
+module github.com/ioimg/ioimg/service
 
 go 1.26.0
 

@@ -9,7 +9,7 @@ import (
 	"image/jpeg"
 	"testing"
 
-	"ioimg/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/ops"
 )
 
 func vipsTestJPEG(t *testing.T) []byte {

@@ -3,8 +3,8 @@ package server
 import (
 	"os"
 
-	"ioimg/internal/config"
-	"ioimg/internal/purge"
+	"github.com/ioimg/ioimg/service/internal/config"
+	"github.com/ioimg/ioimg/service/internal/purge"
 )
 
 func buildPurgers(c config.CDNConfig) []purge.Purger {

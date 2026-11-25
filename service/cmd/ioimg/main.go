@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"ioimg/internal/config"
-	"ioimg/internal/server"
+	"github.com/ioimg/ioimg/service/internal/config"
+	"github.com/ioimg/ioimg/service/internal/server"
 )
 
 // version is injected with -ldflags "-X main.version=...".

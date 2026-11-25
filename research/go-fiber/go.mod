@@ -1,15 +1,15 @@
-module ioimg-poc-go
+module github.com/ioimg/ioimg/research/go-fiber
 
 go 1.25.0
 
 require (
+	github.com/davidbyttow/govips/v2 v2.20.0
 	github.com/gofiber/fiber/v2 v2.52.9
 	golang.org/x/image v0.41.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
-	github.com/davidbyttow/govips/v2 v2.20.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect

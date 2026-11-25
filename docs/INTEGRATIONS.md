@@ -45,10 +45,10 @@ Aturan: bangun ops dari objek, urutkan kanonik, lalu sign bila perlu.
 import { buildUrl, signUrl } from "@ioimg/core";
 
 const url = buildUrl({
-  base: "https://acme.ioimg.dev",
+  base: "https://acme.ioimg.net",
   source: "https://cdn.acme.com/hero.jpg",
   ops: { w: 800, h: 600, c: "fill", f: "auto", q: "auto" },
-  // → https://acme.ioimg.dev/w_800,h_600,c_fill,f_auto,q_auto/https://cdn.acme.com/hero.jpg
+  // → https://acme.ioimg.net/w_800,h_600,c_fill,f_auto,q_auto/https://cdn.acme.com/hero.jpg
 });
 
 // signed (server-side only!)
@@ -66,7 +66,7 @@ buildSrcset({ base, source, widths: [320, 640, 960, 1280, 1920], ops: { f: "auto
 ```php
 use Ioimg\Url;
 
-$url = Url::make('https://acme.ioimg.dev', 'https://cdn.acme.com/hero.jpg')
+$url = Url::make('https://acme.ioimg.net', 'https://cdn.acme.com/hero.jpg')
     ->width(800)->height(600)->fill()->auto()->quality('auto')
     ->signed(getenv('IOIMG_SALT'), 3600)
     ->toString();
@@ -76,7 +76,7 @@ $url = Url::make('https://acme.ioimg.dev', 'https://cdn.acme.com/hero.jpg')
 
 ```python
 from ioimg import Url
-url = (Url("https://acme.ioimg.dev", "https://cdn.acme.com/hero.jpg")
+url = (Url("https://acme.ioimg.net", "https://cdn.acme.com/hero.jpg")
        .w(800).h(600).crop("fill").f("auto").signed(secret, ttl=3600))
 ```
 
@@ -122,7 +122,7 @@ npm i @ioimg/nuxt
 export default defineNuxtConfig({
   modules: ["@ioimg/nuxt"],
   ioimg: {
-    baseUrl: "https://acme.ioimg.dev",
+    baseUrl: "https://acme.ioimg.net",
     salt: process.env.IOIMG_SALT,      // hanya server
     defaults: { format: "auto", quality: "auto" },
   },
@@ -144,7 +144,7 @@ export default defineNuxtConfig({
 // svelte.config.js
 import { ioimgLoader } from "@ioimg/sveltekit";
 export default {
-  kit: { adapter: adapter(), images: { loader: ioimgLoader({ base: "https://acme.ioimg.dev" }) } },
+  kit: { adapter: adapter(), images: { loader: ioimgLoader({ base: "https://acme.ioimg.net" }) } },
 };
 ```
 
@@ -158,7 +158,7 @@ export default {
 // astro.config.mjs
 import ioimg from "@ioimg/astro";
 export default defineConfig({
-  image: { service: ioimg({ baseUrl: "https://acme.ioimg.dev" }) },
+  image: { service: ioimg({ baseUrl: "https://acme.ioimg.net" }) },
 });
 ```
 
@@ -214,7 +214,7 @@ Batas: Shopify memaksa aset lewat `cdn.shopify.com`, dan `img_url` filter hanya 
 Untuk platform tanpa plugin: reverse proxy yang mengubah HTML.
 
 ```
-nginx: sub_filter 'https://cdn.acme.com/' 'https://acme.ioimg.dev/w_auto,f_auto/https://cdn.acme.com/';
+nginx: sub_filter 'https://cdn.acme.com/' 'https://acme.ioimg.net/w_auto,f_auto/https://cdn.acme.com/';
 Cloudflare Worker: HTMLRewriter → element 'img' → setAttribute('src', transform(...))
 ```
 

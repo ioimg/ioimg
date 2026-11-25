@@ -28,8 +28,8 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            src_dir: std::env::var("IOIMG_SRC").unwrap_or_else(|_| "data/src".into()).into(),
-            cache_dir: std::env::var("IOIMG_CACHE").unwrap_or_else(|_| "data/cache".into()).into(),
+            src_dir: std::env::var("IOIMG_SRC").unwrap_or_else(|_| "../../artifacts/datasets/src".into()).into(),
+            cache_dir: std::env::var("IOIMG_CACHE").unwrap_or_else(|_| "../../artifacts/cache/rust".into()).into(),
             port: std::env::var("IOIMG_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080),
             nocache: std::env::var("IOIMG_NOCACHE").map(|v| v == "1").unwrap_or(false),
         }

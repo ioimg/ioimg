@@ -6,11 +6,11 @@ import (
 	"os"
 	"time"
 
-	"ioimg-poc-go/internal/ioimg"
+	"github.com/ioimg/ioimg/research/go-fiber/internal/ioimg"
 )
 
 func main() {
-	path := "../poc/data/src/photo00.jpg"
+	path := "../../artifacts/datasets/src/photo00.jpg"
 	if len(os.Args) > 1 {
 		path = os.Args[1]
 	}

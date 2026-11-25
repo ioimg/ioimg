@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     let mut a = std::env::args().skip(1);
-    let dir: PathBuf = a.next().unwrap_or_else(|| "data/src".into()).into();
+    let dir: PathBuf = a.next().unwrap_or_else(|| "../../artifacts/datasets/src".into()).into();
     let count: u32 = a.next().and_then(|v| v.parse().ok()).unwrap_or(8);
     let noise: bool = std::env::var("NOISE").map(|v| v != "0").unwrap_or(true);
     let w: u32 = a.next().and_then(|v| v.parse().ok()).unwrap_or(2400);

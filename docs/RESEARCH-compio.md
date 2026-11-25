@@ -199,7 +199,7 @@ Karena itu U1 dinyatakan **lulus sementara**, bukan lulus permanen. Angka di ata
 
 ## 9. Hasil PoC (kode nyata, bukan spike)
 
-PoC lengkap ada di [`../poc/`](../poc/README.md): dua server (tokio, compio), tiga backend (`std::fs`, `tokio::fs`, io_uring), router + transform + cache + metrics, plus `probe-uring` dan load generator.
+PoC lengkap ada di [`../research/rust-uring/`](../research/rust-uring/README.md): dua server (tokio, compio), tiga backend (`std::fs`, `tokio::fs`, io_uring), router + transform + cache + metrics, plus `probe-uring` dan load generator.
 
 Temuan yang mengubah prioritas:
 

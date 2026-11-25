@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"ioimg/internal/ops"
-	"ioimg/internal/sign"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/sign"
 )
 
 // Config is the immutable runtime configuration.
@@ -95,7 +95,7 @@ func Load() (Config, error) {
 		FallbackRedirect: envBool("IOIMG_FALLBACK_REDIRECT", false),
 		SourceTimeout:    envDuration("IOIMG_SOURCE_TIMEOUT", 15*time.Second),
 		SourceMaxBytes:   int64(envInt("IOIMG_SOURCE_MAX_BYTES", 25*1024*1024)),
-		SourceUserAgent:  env("IOIMG_SOURCE_USER_AGENT", "ioimg/0.1 (+https://ioimg.dev)"),
+		SourceUserAgent:  env("IOIMG_SOURCE_USER_AGENT", "github.com/ioimg/ioimg/service/0.1 (+https://ioimg.net)"),
 		MaxDimension:     envInt("IOIMG_MAX_DIMENSION", ops.MaxDimension),
 		Concurrency:      envInt("IOIMG_CONCURRENCY", 0),
 		CacheDir:         env("IOIMG_CACHE_DIR", "./cache"),

@@ -1,13 +1,13 @@
 # ioimg PoC versi Go
 
-PoC paralel dari [`../poc`](../poc/README.md): URL, ops, cache key, dan dataset **sama**, supaya angkanya bisa dibandingkan langsung. Dua mode HTTP: **Fiber** (fasthttp) dan **net/http** standar, plus opsi **prefork** (`SO_REUSEPORT`).
+PoC paralel dari [`../rust-uring`](../rust-uring/README.md): URL, ops, cache key, dan dataset **sama**, supaya angkanya bisa dibandingkan langsung. Dua mode HTTP: **Fiber** (fasthttp) dan **net/http** standar, plus opsi **prefork** (`SO_REUSEPORT`).
 
 ```bash
 go build -o bin/ioimg-go .
 ./bin/ioimg-go -mode fiber -prefork -addr :8080          # gofiber + prefork
 ./bin/ioimg-go -mode http -addr :8080                    # net/http
 ./bin/ioimg-go -mode fiber -nocache -filter bilinear     # ukur kapasitas CPU
-go run ./cmd/benchtransform ../poc/data/src/photo00.jpg
+go run ./cmd/benchtransform ../../artifacts/datasets/src/photo00.jpg
 go test ./...
 ```
 
@@ -98,4 +98,4 @@ Inertia + access log) diukur terpisah, dengan handler yang sama persis:
 - cache MISS: rasio 1,01 (overhead middleware hilang di bawah biaya transform)
 - temuan operasional: session+CSRF menulis **2 key Valkey per request** (TTL 24h)
 
-Detail, metodologi, dan cara reproduksi: [`../docs/BENCH-GO-STARTERKIT.md`](../docs/BENCH-GO-STARTERKIT.md).
+Detail, metodologi, dan cara reproduksi: [`../../docs/BENCH-GO-STARTERKIT.md`](../../docs/BENCH-GO-STARTERKIT.md).

@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"ioimg/internal/ops"
-	"ioimg/internal/sign"
-	"ioimg/internal/tenant"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/sign"
+	"github.com/ioimg/ioimg/service/internal/tenant"
 )
 
 // Target is a fully parsed and normalised image request.

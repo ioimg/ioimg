@@ -1,8 +1,8 @@
 // Command ioimgctl builds and verifies signed ioimg URLs.
 //
-//	ioimgctl sign -base https://acme.ioimg.dev -ops w_800,f_auto -source https://cdn.acme.com/a.jpg \
+//	ioimgctl sign -base https://acme.ioimg.net -ops w_800,f_auto -source https://cdn.acme.com/a.jpg \
 //	  -key kid1:secret -exp 24h
-//	ioimgctl verify -url 'https://acme.ioimg.dev/...' -key kid1:secret
+//	ioimgctl verify -url 'https://acme.ioimg.net/...' -key kid1:secret
 package main
 
 import (
@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"ioimg/internal/ops"
-	"ioimg/internal/sign"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/sign"
 )
 
 func main() {

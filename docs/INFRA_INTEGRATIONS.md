@@ -78,7 +78,7 @@ credentials = { type = "env", access_key = "IOIMG_S3_KEY", secret_key = "IOIMG_S
 prefix_allow = ["public/", "products/"]        # batasi prefix, wajib
 ```
 
-URL publik: `https://acme.ioimg.dev/w_800,f_auto/media/products/123.jpg`
+URL publik: `https://acme.ioimg.net/w_800,f_auto/media/products/123.jpg`
 
 ### 3.2 Kompatibilitas S3 (hal yang mudah salah)
 

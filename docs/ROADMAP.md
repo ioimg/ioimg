@@ -20,7 +20,7 @@ Setiap milestone punya **exit criteria** yang bisa diukur. Jika criteria tidak t
 
 > **Prasyarat:** 12 eksperimen di [`RESEARCH-compio.md §5`](RESEARCH-compio.md) harus dijawab lebih dulu. U1 (keep-alive) adalah gerbang: gagal → profil `compio` dibekukan, ioimg tetap `tokio + IoBackend::Uring`.
 >
-> **Status PoC (sudah dijalankan):** lihat [`poc/README.md`](../poc/README.md). Ringkas: U1/U2 terjawab, io_uring naif **belum** mengalahkan `std::fs` untuk objek kecil, dan bottleneck nyata adalah **CPU transformasi** (72 ms/gambar → 14 img/s/core), bukan I/O. Urutan prioritas M0 berubah: codec dulu, baru I/O.
+> **Status PoC (sudah dijalankan):** lihat [`research/rust-uring/README.md`](../research/rust-uring/README.md). Ringkas: U1/U2 terjawab, io_uring naif **belum** mengalahkan `std::fs` untuk objek kecil, dan bottleneck nyata adalah **CPU transformasi** (72 ms/gambar → 14 img/s/core), bukan I/O. Urutan prioritas M0 berubah: codec dulu, baru I/O.
 
 | # | Deliverable |
 | --- | --- |

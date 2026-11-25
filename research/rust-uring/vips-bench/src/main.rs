@@ -99,7 +99,7 @@ impl Vips {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "data/src/photo00.jpg".into());
+    let path = std::env::args().nth(1).unwrap_or_else(|| "../../artifacts/datasets/src/photo00.jpg".into());
     let src = std::fs::read(&path).expect("baca sumber");
     let vips = Vips::new();
     println!("sumber: {path} ({} KiB) — libvips via FFI", src.len() / 1024);

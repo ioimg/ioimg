@@ -40,7 +40,7 @@ Cache antar node **tidak** di-share secara default (L2 lokal). Request acak bisa
 ```
 Region A: CDN(A) → ioimg(A) → origin
 Region B: CDN(B) → ioimg(B) → origin
-Control plane (api.ioimg.dev) — global, config replicated, Postgres multi-AZ
+Control plane (api.ioimg.net) — global, config replicated, Postgres multi-AZ
 ```
 
 ## 2. Requirement sistem

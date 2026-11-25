@@ -19,13 +19,13 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"ioimg/internal/cache"
-	"ioimg/internal/config"
-	"ioimg/internal/imaging"
-	"ioimg/internal/ops"
-	"ioimg/internal/purge"
-	"ioimg/internal/source"
-	"ioimg/internal/tenant"
+	"github.com/ioimg/ioimg/service/internal/cache"
+	"github.com/ioimg/ioimg/service/internal/config"
+	"github.com/ioimg/ioimg/service/internal/imaging"
+	"github.com/ioimg/ioimg/service/internal/ops"
+	"github.com/ioimg/ioimg/service/internal/purge"
+	"github.com/ioimg/ioimg/service/internal/source"
+	"github.com/ioimg/ioimg/service/internal/tenant"
 )
 
 // Server is the ioimg data plane.
@@ -484,7 +484,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, he *HTTPErro
 			"code":       he.Code,
 			"message":    he.Message,
 			"request_id": requestID(r),
-			"docs":       "https://ioimg.dev/docs/errors#" + he.Code,
+			"docs":       "https://ioimg.net/docs/errors#" + he.Code,
 		},
 	}
 	_ = json.NewEncoder(w).Encode(body)

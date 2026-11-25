@@ -384,7 +384,7 @@ signed_url = "per-project"     # "off" | "per-project" | "always"
 
 [[project]]
 id = "acme"
-hosts = ["acme.ioimg.dev"]
+hosts = ["acme.ioimg.net"]
 allow = ["cdn.acme.com", "*.acme.com"]
 mode = "signed"
 ```

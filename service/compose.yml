@@ -26,7 +26,7 @@ services:
   origin:
     image: nginx:alpine
     volumes:
-      - ../poc/data/src:/usr/share/nginx/html:ro
+      - ../artifacts/datasets/src:/usr/share/nginx/html:ro
 
 volumes:
   cache:

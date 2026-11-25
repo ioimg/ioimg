@@ -5,7 +5,7 @@ gambar yang sudah di-resize/convert/cache. Tidak perlu upload, SDK wajib, atau
 mengubah pipeline build.
 
 ```
-https://acme.ioimg.dev/w_800,f_auto,q_auto/https://cdn.acme.com/hero.jpg
+https://acme.ioimg.net/w_800,f_auto,q_auto/https://cdn.acme.com/hero.jpg
 ```
 
 ---
@@ -22,10 +22,11 @@ Billing/payment provider dan hardening produksi masih M2. Lihat
 ```
 service/          # data plane (Go, net/http) + control plane (SQLite) — MVP
 integrations/     # URL builder JS, loader Next.js, plugin WordPress
-poc/              # PoC Rust (riwayat): tokio vs io_uring, benchmark
-poc-go/           # PoC Go: Fiber + prefork + govips
-bench-kinstack/   # salinan starterkit kinstack untuk bench middleware
+research/         # eksperimen terukur: rust-uring, go-fiber (bukan produksi)
 docs/             # PRD, API, arsitektur, keamanan, operasi, ADR
+tools/            # skrip repo: ambil snapshot benchmark, generator
+examples/         # demo compose (menyusul)
+artifacts/        # lokal saja, gitignored: dataset, cache, log, snapshot
 ```
 
 ## Mulai cepat
@@ -68,9 +69,10 @@ Tes: `cd service && go test ./...`.
 | [docs/IMGPARITY.md](docs/IMGPARITY.md) | Matriks parity fitur vs imgproxy + prioritas penambahan |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestone M0–M4 dengan exit criteria |
 | [docs/RESEARCH-compio.md](docs/RESEARCH-compio.md) | Riset compio/cyper-axum: fakta terverifikasi, koreksi klaim, risk register produksi, 12 eksperimen prasyarat |
-| [poc/README.md](poc/README.md) | **PoC Rust terukur**: server tokio & compio, backend std vs io_uring, hasil benchmark + temuan |
-| [poc-go/README.md](poc-go/README.md) | **PoC Go (Fiber + prefork)**: benchmark pembanding + temuan bahwa libvips 3–5× lebih menentukan daripada pilihan bahasa |
+| [research/rust-uring/README.md](research/rust-uring/README.md) | **PoC Rust terukur**: server tokio & compio, backend std vs io_uring, hasil benchmark + temuan |
+| [research/go-fiber/README.md](research/go-fiber/README.md) | **PoC Go (Fiber + prefork)**: benchmark pembanding + temuan bahwa libvips 3–5× lebih menentukan daripada pilihan bahasa |
 | [docs/BENCH-GO-STARTERKIT.md](docs/BENCH-GO-STARTERKIT.md) | **Bench starterkit `kinstack`**: overhead middleware nyata (HIT −69%, p50 3,5×), penyebab per-lapisan, temuan 2 key Valkey/request, rekomendasi pemisahan data plane |
+| [docs/ARTIFACTS.md](docs/ARTIFACTS.md) | Layout `artifacts/` (dataset, cache, benchmark, snapshot) + cara regenerasi |
 | [integrations/README.md](integrations/README.md) | URL builder JS, loader Next.js, plugin WordPress |
 | [docs/adr/](docs/adr/) | Architecture Decision Records (0008: data plane Go; 0009: control plane multi-tenant; 0001/0007 historis) |
 
@@ -91,10 +93,6 @@ Tes: `cd service && go test ./...`.
 6. **Infra sebagai adaptor** (`StorageBackend`, `CdnInvalidator`) tetap target
    M2; lihat [ADR-0006](docs/adr/0006-infra-adapters.md).
 
-## Lisensi
-
-TBD (kandidat: AGPL-3.0 untuk core self-host + lisensi komersial untuk fitur enterprise).
-
 ### Mode multi-tenant
 
 ```bash
@@ -107,3 +105,18 @@ Atau lokal: `make run-control` lalu `IOIMG_CONTROL_URL=http://localhost:8081
 IOIMG_CONTROL_TOKEN=data make run`. Detail di
 [`service/README.md`](service/README.md#multi-tenant-control-plane) dan
 [ADR-0009](docs/adr/0009-control-plane.md).
+
+## Lisensi
+
+Core ioimg dilisensikan under **FSL-1.1-MIT** (Functional Source License):
+self-host, modifikasi, dan pakai untuk konteks bisnis apa pun diperbolehkan,
+kecuali menjadikannya produk/layanan komersial yang menggantikan ioimg. Setiap
+rilis otomatis berubah menjadi MIT setelah 2 tahun. Lihat [`LICENSE`](LICENSE).
+
+Fitur enterprise/gated dan opsi cloud tersedia di bawah lisensi komersial
+terpisah; lihat [`LICENSE-EE`](LICENSE-EE). Nama dan logo ioimg diatur di
+[`TRADEMARK.md`](TRADEMARK.md).
+
+Kontribusi tunduk pada [`CLA.md`](CLA.md); panduan ada di
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Untuk melaporkan masalah keamanan, lihat
+[`docs/SECURITY.md`](docs/SECURITY.md).
