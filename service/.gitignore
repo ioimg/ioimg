@@ -1,7 +1,7 @@
-# Build artifacts
-bin/
-cache/
-.cache-test/
+# Build artifacts (scoped to service/ root only)
+/bin/
+/cache/
+/.cache-test/
 *.exe
 
 # Local configuration and secrets
