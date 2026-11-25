@@ -62,7 +62,7 @@ atau service terpisah.
 | Fitur imgproxy | ioimg | Rencana |
 | --- | --- | --- |
 | Resizing | ✅ | `w`, `h`, `c_*` |
-| Resize dengan algoritma pilihan | 🟡 | pure Go CatmullRom; vips Lanczos3; belum ada parameter URL |
+| Resize dengan algoritma pilihan | ✅ | `ra_nearest/linear/cubic/lanczos2/lanczos3`; vips pakai kernel native, pure Go memetakan Lanczos→Catmull-Rom |
 | Crop & trim | ✅ | `c_crop`, `trim` |
 | Padding | ✅ | `c_pad`, `bg` |
 | Extending | 🟡 | via `c_pad`; belum op `extend` terpisah |
@@ -103,7 +103,7 @@ atau service terpisah.
 | Advanced smart crop + face | ⛔ | butuh face/feature detector |
 | Object-oriented crop (AI) | ⛔ | butuh model/worker |
 | Object blurring (AI) | ⛔ | butuh model/worker |
-| Autoquality by file size | ⛔ | loop encode + binary search; layak M3 |
+| Autoquality by file size | ✅ | `mb_<bytes>`: binary search `q` 20..q0, maks 5 probe, deterministik; tidak pernah gagal (kembalikan terkecil) |
 | Autoquality by DSSIM | ⛔ | butuh metrik DSSIM |
 | Automatic best format | 🟡 | `f_auto` memilih berdasarkan `Accept`, bukan rasio kompresi |
 
@@ -120,6 +120,8 @@ atau service terpisah.
 | Allowed source restriction | ✅ | allowlist + SSRF guard |
 | Source hashsum verification | ⛔ | parameter `hs_` + verifikasi |
 | URL expiration | ✅ | `exp` |
+| Response filename | ✅ | `fn_` → `Content-Disposition`; signed, tapi tidak masuk cache key |
+| Cache buster | ✅ | `cb_`; signed, tidak masuk cache key |
 | SVG sanitization | 🔒 | SVG tidak diterima |
 
 ### 2.6 Sumber gambar

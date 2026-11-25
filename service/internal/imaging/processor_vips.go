@@ -145,6 +145,16 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 // resolution and downscaling afterwards. Measured on a 2400x1600 JPEG:
 // 9.6 ms/img vs 21.7 ms/img for the decode-then-resize path.
 func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Result, error) {
+	// vips_thumbnail decodes at the requested scale, so the shrink-on-load path
+	// would otherwise never see the source dimensions: a 60000px-wide source
+	// asked for w_8000 would allocate 8000x8000 before any guard ran. Probe the
+	// header (lazy, no pixel data) and apply the documented limits first.
+	if w, h, err := probeDimensions(src); err != nil {
+		return Result{}, ErrDecode
+	} else if w > MaxSide || h > MaxSide || w*h > MaxPixels {
+		return Result{}, ErrDimension
+	}
+
 	start := time.Now()
 	img, err := vips.LoadThumbnailFromBuffer(src, plan.width, plan.height, plan.crop, plan.size, nil)
 	if err != nil {
@@ -186,6 +196,17 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	return res, nil
 }
 
+// probeDimensions reads only the header: NewImageFromBuffer is lazy, so this
+// costs one header parse and no pixel decode.
+func probeDimensions(src []byte) (int, int, error) {
+	img, err := vips.NewImageFromBuffer(src)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer img.Close()
+	return img.Width(), img.Height(), nil
+}
+
 // thumbnailOp is a resize expressible as a single vips_thumbnail_buffer call.
 type thumbnailOp struct {
 	width  int
@@ -205,6 +226,13 @@ func thumbnailPlan(src []byte, o ops.Ops, opts Options) (thumbnailOp, bool) {
 		return thumbnailOp{}, false
 	}
 	if opts.OutFormat == ops.FormatJSON {
+		return thumbnailOp{}, false
+	}
+	// vips_thumbnail has no kernel override (only a loader option string), so a
+	// non-default ra_* must take the explicit-resize path or the kernel would be
+	// silently ignored. That costs shrink-on-load, which is why lanczos3 stays
+	// the default in the URL parser.
+	if o.Algorithm != "" && o.Algorithm != ops.AlgoLanczos3 {
 		return thumbnailOp{}, false
 	}
 	if o.Trim > 0 || o.Rotate != 0 || o.Flip != "" || o.Blur > 0 || o.Sharpen > 0 ||
@@ -430,11 +458,11 @@ func geometry(img *vips.ImageRef, o ops.Ops) error {
 		if nw == sw && nh == sh {
 			return nil
 		}
-		return img.ResizeWithVScale(float64(nw)/float64(sw), float64(nh)/float64(sh), vips.KernelLanczos3)
+		return img.ResizeWithVScale(float64(nw)/float64(sw), float64(nh)/float64(sh), kernelFor(o.Algorithm))
 	case ops.ResizeFill:
 		if tw <= 0 || th <= 0 {
 			nw, nh := fit(sw, sh, tw, th, o.Enlarge)
-			return img.ResizeWithVScale(float64(nw)/float64(sw), float64(nh)/float64(sh), vips.KernelLanczos3)
+			return img.ResizeWithVScale(float64(nw)/float64(sw), float64(nh)/float64(sh), kernelFor(o.Algorithm))
 		}
 		// ThumbnailWithSize with SizeBoth scales to cover then crops using the
 		// requested area of interest.
@@ -456,7 +484,7 @@ func geometry(img *vips.ImageRef, o ops.Ops) error {
 		}
 		nw, nh := fit(sw, sh, tw, th, o.Enlarge)
 		if nw != sw || nh != sh {
-			if err := img.ResizeWithVScale(float64(nw)/float64(sw), float64(nh)/float64(sh), vips.KernelLanczos3); err != nil {
+			if err := img.ResizeWithVScale(float64(nw)/float64(sw), float64(nh)/float64(sh), kernelFor(o.Algorithm)); err != nil {
 				return err
 			}
 		}
@@ -493,6 +521,17 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 	if !vips.IsTypeSupported(format) {
 		return nil, fmt.Errorf("unsupported_format: %s", opts.OutFormat)
 	}
+	out, err := exportAt(img, format, quality)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", opts.OutFormat, err)
+	}
+	if o.MaxBytes <= 0 || !lossy(opts.OutFormat) || len(out) <= o.MaxBytes {
+		return out, nil
+	}
+	return fitBytesVips(img, format, o.MaxBytes, quality, out)
+}
+
+func exportAt(img *vips.ImageRef, format vips.ImageType, quality int) ([]byte, error) {
 	out, _, err := img.Export(&vips.ExportParams{
 		Format:        format,
 		Quality:       quality,
@@ -503,9 +542,70 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 		Speed:         8,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", opts.OutFormat, err)
+		return nil, err
 	}
 	return out, nil
+}
+
+// fitBytesVips mirrors fitBytes: highest quality that fits the mb_ budget, and
+// never an error when nothing fits.
+func fitBytesVips(img *vips.ImageRef, format vips.ImageType, maxBytes, startQuality int, first []byte) ([]byte, error) {
+	// A buffer-backed vips image is streamed sequentially: the first export
+	// consumes it, so a second export fails with "out of order read". The search
+	// needs repeatable reads, so materialise the pixels once.
+	// ToBytes serialises the pipeline in vips' native format; reloading it gives
+	// a memory-backed image whose pixels can be read repeatedly.
+	raw, err := img.ToBytes()
+	if err != nil {
+		return first, nil
+	}
+	mem, err := vips.NewImageFromBuffer(raw)
+	if err != nil {
+		return first, nil
+	}
+	defer mem.Close()
+	img = mem
+
+	best := []byte(nil)
+	lo, hi := minQuality, startQuality-1
+	for i := 0; i < maxQualityProbes && lo <= hi; i++ {
+		mid := (lo + hi) / 2
+		cand, err := exportAt(img, format, mid)
+		if err != nil {
+			return nil, err
+		}
+		if len(cand) <= maxBytes {
+			best = cand
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best != nil {
+		return best, nil
+	}
+	smallest := first
+	if floor, err := exportAt(img, format, minQuality); err == nil && len(floor) < len(smallest) {
+		smallest = floor
+	}
+	return smallest, nil
+}
+
+// kernelFor maps ra_* onto vips kernels. The empty value keeps lanczos3, which
+// is vips' own default.
+func kernelFor(a ops.Algorithm) vips.Kernel {
+	switch a {
+	case ops.AlgoNearest:
+		return vips.KernelNearest
+	case ops.AlgoLinear:
+		return vips.KernelLinear
+	case ops.AlgoCubic:
+		return vips.KernelCubic
+	case ops.AlgoLanczos2:
+		return vips.KernelLanczos2
+	default:
+		return vips.KernelLanczos3
+	}
 }
 
 func autoQuality(f ops.Format, w, h int) int {

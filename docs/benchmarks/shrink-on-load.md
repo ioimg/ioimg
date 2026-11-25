@@ -80,3 +80,21 @@ pemindahan config celeris ke `celerisConfig()`:
 Guard dimensi tidak menambah biaya: ia hanya membaca IHDR
 (`image.DecodeConfig`) sebelum decode, dan pada jalur vips dimensi datang dari
 header yang memang sudah dibaca lazy.
+
+## Biaya `ra_*`, `mb_` (diukur, 1 koneksi, MISS, 2400×1600 → w_400 JPEG)
+
+| Ops | rps | p50 | catatan |
+| --- | --- | --- | --- |
+| `w_400,c_fit,f_jpg,q_80` (default lanczos3) | 73 | 10,9 ms | shrink-on-load |
+| `…,mb_20000` | 67 | 11,5 ms | +5%: 1–2 export tambahan untuk cari `q` |
+| `…,ra_linear` | 44 | 20,2 ms | keluar dari shrink-on-load |
+| `…,ra_nearest` | 38 | 25,1 ms | keluar dari shrink-on-load |
+
+`vips_thumbnail` tidak menerima `kernel`, hanya option string untuk *loader*.
+Jadi `ra_*` selain `lanczos3` sengaja jatuh ke jalur eksplisit (decode penuh +
+`ResizeWithVScale(kernel)`), dan biayanya ~2× lebih lambat pada MISS. Rekomendasi:
+biarkan default `lanczos3`; pakai `ra_nearest` hanya kalau resize memang jadi
+bottleneck CPU (mis. upscale besar), bukan untuk menghemat waktu.
+
+`mb_` aman untuk hot path: ia hanya berjalan saat MISS, deterministik, dan
+hasilnya ikut cache key (`mb_<n>` ada di canonical), jadi ETag tetap stabil.

@@ -81,7 +81,22 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `strip` | strip metadata | `0`, `1` | 1 | Default membuang EXIF/GPS |
 | `enlarge` | allow upscale | `0`, `1` | 0 | |
 | `palette` | PNG palette | `1` | 0 | Kuantisasi 256 warna |
+| `ra` | resampling kernel | `nearest`, `linear`, `cubic`, `lanczos2`, `lanczos3` | `lanczos3` | vips memakai kernel native; pure Go memetakan Lanczos → Catmull-Rom. Selain `lanczos3`, vips keluar dari shrink-on-load (~2× lebih lambat saat MISS) |
+| `mb` | max output bytes | 1024..8388608 | — | Menurunkan `q` sampai hasil muat; hanya untuk format lossy (`jpeg`/`webp`/`avif`), ditolak untuk `png`/`gif`/`json` |
+| `fn` | response filename | `[A-Za-z0-9._-]{1,120}` | — | Hanya mengubah `Content-Disposition: inline; filename="…"` |
+| `cb` | cache buster | `[A-Za-z0-9_-]{1,64}` | — | Hanya untuk bypass CDN |
 | `sharpen` | alias `sharp` | | | |
+
+`ra`, `mb`, `fn`, `cb` mengikuti penamaan imgproxy supaya migrasi tidak perlu
+menerjemahkan URL.
+
+#### Cache key vs signature
+
+`fn` dan `cb` **tidak masuk cache key** — dua URL yang hanya berbeda `fn`/`cb`
+berbagi satu objek cache dan satu ETag (kalau ikut masuk, `cb` justru membuat
+entri cache baru dan tujuannya hilang). Keduanya **masuk signatur**, jadi token
+`cb` tidak bisa ditempelkan ke URL bertanda tangan tanpa menandatangani ulang.
+`ra` dan `mb` mengubah piksel, jadi keduanya ada di cache key maupun signatur. |
 
 ### 2.1 Preset
 

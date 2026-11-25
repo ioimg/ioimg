@@ -6,10 +6,10 @@ import (
 	"bytes"
 	"image"
 	"image/color"
-	"os"
 	"image/jpeg"
 	_ "image/png"
 	"math"
+	"os"
 	"testing"
 
 	"github.com/ioimg/ioimg/service/pkg/ops"

@@ -122,7 +122,7 @@ func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, p *tenan
 		if p.Signing == nil {
 			return Target{}, errInvalidSignature()
 		}
-		if err := p.Signing.Verify(sig, o.Canonical(), source, exp); err != nil {
+		if err := p.Signing.Verify(sig, o.SigningCanonical(), source, exp); err != nil {
 			switch err {
 			case sign.ErrExpired:
 				return Target{}, errSignatureExpired()

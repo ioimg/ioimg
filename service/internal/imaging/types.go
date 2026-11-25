@@ -42,6 +42,18 @@ type Processor interface {
 	Process(src []byte, o ops.Ops, opts Options) (Result, error)
 }
 
+// Quality floor and probe budget for the mb_ budget search. Shared by both
+// backends so the two paths converge on the same answer.
+const (
+	minQuality       = 20
+	maxQualityProbes = 5
+)
+
+// lossy reports whether the encoder has a quality knob worth searching.
+func lossy(f ops.Format) bool {
+	return f == ops.FormatJPEG || f == ops.FormatWebP || f == ops.FormatAVIF
+}
+
 // MaxPixels is the hard decode limit (40 MP, matching docs/API.md).
 const MaxPixels = 40_000_000
 

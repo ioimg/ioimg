@@ -351,7 +351,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.metrics.Hits.Add(1)
 		h.Set("X-IOIMG-Cache", "HIT-L1")
 		h.Set("Last-Modified", mod.UTC().Format(http.TimeFormat))
-		s.writeBody(w, r, format, data)
+		s.writeBody(w, r, format, target.Ops.Filename, data)
 		return
 	}
 	select {
@@ -440,7 +440,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Server-Timing", serverTiming(res.timings))
 		h.Set("X-IOIMG-Transform-Ms", strconv.FormatFloat(res.timings["total"], 'f', 2, 64))
 	}
-	s.writeBody(w, r, format, res.data)
+	s.writeBody(w, r, format, target.Ops.Filename, res.data)
 }
 
 // render fetches, decodes, transforms, and encodes one image.
@@ -495,9 +495,14 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	return res.Data, timings, nil
 }
 
-func (s *Server) writeBody(w http.ResponseWriter, r *http.Request, format ops.Format, data []byte) {
+func (s *Server) writeBody(w http.ResponseWriter, r *http.Request, format ops.Format, filename string, data []byte) {
 	w.Header().Set("Content-Type", imaging.ContentType(format))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	if filename != "" {
+		// fn_ is sanitised at parse time (letters, digits, dot, dash, underscore
+		// only), so the quoted form cannot break out of the header value.
+		w.Header().Set("Content-Disposition", `inline; filename="`+filename+`"`)
+	}
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return

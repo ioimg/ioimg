@@ -134,6 +134,46 @@ func encode(img image.Image, o ops.Ops, opts Options) ([]byte, error) {
 	if quality == 0 {
 		quality = autoQuality(format, img.Bounds().Dx(), img.Bounds().Dy())
 	}
+	out, err := encodeAt(img, o, format, quality)
+	if err != nil {
+		return nil, err
+	}
+	if o.MaxBytes <= 0 || !lossy(format) || len(out) <= o.MaxBytes {
+		return out, nil
+	}
+	return fitBytes(img, o, format, quality, out)
+}
+
+// fitBytes finds the highest quality whose output fits the mb_ budget. It never
+// fails the request: if even the floor does not fit, the smallest encoding is
+// returned so the client still gets an image (and the CDN caches it).
+func fitBytes(img image.Image, o ops.Ops, format ops.Format, startQuality int, first []byte) ([]byte, error) {
+	best := []byte(nil)
+	lo, hi := minQuality, startQuality-1
+	for i := 0; i < maxQualityProbes && lo <= hi; i++ {
+		mid := (lo + hi) / 2
+		cand, err := encodeAt(img, o, format, mid)
+		if err != nil {
+			return nil, err
+		}
+		if len(cand) <= o.MaxBytes {
+			best = cand
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best != nil {
+		return best, nil
+	}
+	smallest := first
+	if floor, err := encodeAt(img, o, format, minQuality); err == nil && len(floor) < len(smallest) {
+		smallest = floor
+	}
+	return smallest, nil
+}
+
+func encodeAt(img image.Image, o ops.Ops, format ops.Format, quality int) ([]byte, error) {
 	var buf bytes.Buffer
 	switch format {
 	case ops.FormatWebP:
@@ -218,11 +258,11 @@ func geometry(src image.Image, o ops.Ops) (image.Image, error) {
 		if nw == sw && nh == sh {
 			return src, nil
 		}
-		return scale(src, nw, nh), nil
+		return scale(src, nw, nh, o.Algorithm), nil
 	case ops.ResizeFill:
 		if tw <= 0 || th <= 0 {
 			nw, nh := fitSize(sw, sh, tw, th, o.Enlarge)
-			return scale(src, nw, nh), nil
+			return scale(src, nw, nh, o.Algorithm), nil
 		}
 		scaleF := math.Max(float64(tw)/float64(sw), float64(th)/float64(sh))
 		if !o.Enlarge && scaleF > 1 {
@@ -230,7 +270,7 @@ func geometry(src image.Image, o ops.Ops) (image.Image, error) {
 		}
 		nw := int(math.Round(float64(sw) * scaleF))
 		nh := int(math.Round(float64(sh) * scaleF))
-		scaled := scale(src, nw, nh)
+		scaled := scale(src, nw, nh, o.Algorithm)
 		return cropTo(scaled, tw, th, o.Gravity), nil
 	case ops.ResizeForce:
 		nw, nh := tw, th
@@ -240,13 +280,13 @@ func geometry(src image.Image, o ops.Ops) (image.Image, error) {
 		if nh <= 0 {
 			nh = int(math.Round(float64(tw) * float64(sh) / float64(sw)))
 		}
-		return scale(src, clampSide(nw), clampSide(nh)), nil
+		return scale(src, clampSide(nw), clampSide(nh), o.Algorithm), nil
 	case ops.ResizePad:
 		if tw <= 0 || th <= 0 {
 			return nil, fmt.Errorf("c_pad requires w and h")
 		}
 		nw, nh := fitSize(sw, sh, tw, th, o.Enlarge)
-		inner := scale(src, nw, nh)
+		inner := scale(src, nw, nh, o.Algorithm)
 		canvas := image.NewNRGBA(image.Rect(0, 0, tw, th))
 		fillBackground(canvas, o.Background)
 		dx, dy := anchor(inner.Bounds().Dx(), inner.Bounds().Dy(), tw, th, o.Gravity)
@@ -290,9 +330,23 @@ func clampSide(v int) int {
 	return v
 }
 
-func scale(src image.Image, w, h int) image.Image {
+// scalerFor maps ra_* onto the pure-Go interpolators. golang.org/x/image has no
+// Lanczos implementation, so both Lanczos values fall back to Catmull-Rom here;
+// the vips backend honours them exactly.
+func scalerFor(a ops.Algorithm) xdraw.Interpolator {
+	switch a {
+	case ops.AlgoNearest:
+		return xdraw.NearestNeighbor
+	case ops.AlgoLinear:
+		return xdraw.ApproxBiLinear
+	default:
+		return xdraw.CatmullRom
+	}
+}
+
+func scale(src image.Image, w, h int, a ops.Algorithm) image.Image {
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
+	scalerFor(a).Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
 	return dst
 }
 

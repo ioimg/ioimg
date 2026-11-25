@@ -39,6 +39,17 @@ const (
 	ResizeScale Resize = "scale"
 )
 
+// Algorithm is the resampling kernel (ra_*). The default matches imgproxy.
+type Algorithm string
+
+const (
+	AlgoLanczos3 Algorithm = "lanczos3"
+	AlgoLanczos2 Algorithm = "lanczos2"
+	AlgoCubic    Algorithm = "cubic"
+	AlgoLinear   Algorithm = "linear"
+	AlgoNearest  Algorithm = "nearest"
+)
+
 // Gravity is the crop/pad anchor (g_*).
 type Gravity string
 
@@ -85,6 +96,17 @@ type Ops struct {
 	Enlarge    bool
 	Palette    bool
 	Preset     string
+	// Algorithm selects the resampling kernel. Empty means lanczos3 and keeps
+	// the canonical form (and therefore the cache key) of existing URLs.
+	Algorithm Algorithm
+	// MaxBytes bounds the encoded response. Lossy formats re-encode at a lower
+	// quality until the result fits; zero means "no budget".
+	MaxBytes int
+	// Filename only affects Content-Disposition: it never changes pixels, so it
+	// is signed but excluded from the cache key.
+	Filename string
+	// Cachebuster is a CDN bypass token: signed, never part of the cache key.
+	Cachebuster string
 }
 
 // Default returns the implicit defaults from docs/API.md.
@@ -344,6 +366,35 @@ func (o *Ops) set(key, value string) error {
 		default:
 			return fmt.Errorf("palette must be 0 or 1")
 		}
+	case "ra":
+		switch Algorithm(value) {
+		case AlgoLanczos3, AlgoLanczos2, AlgoCubic, AlgoLinear, AlgoNearest:
+			o.Algorithm = Algorithm(value)
+		default:
+			return fmt.Errorf("ra: unknown algorithm %q", value)
+		}
+	case "mb":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1024 || n > 8<<20 {
+			return fmt.Errorf("mb must be 1024..8388608")
+		}
+		o.MaxBytes = n
+	case "fn":
+		clean, err := sanitizeFilename(value)
+		if err != nil {
+			return err
+		}
+		o.Filename = clean
+	case "cb":
+		if len(value) > 64 {
+			return fmt.Errorf("cb must be at most 64 characters")
+		}
+		for _, c := range value {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return fmt.Errorf("cb must be alphanumeric, dash or underscore")
+			}
+		}
+		o.Cachebuster = value
 	case "t":
 		o.Preset = value
 	default:
@@ -378,7 +429,30 @@ func (o *Ops) validate() error {
 	if o.Rotate != 0 && o.Flip != "" {
 		return fmt.Errorf("rot and flip cannot be combined")
 	}
+	if o.MaxBytes > 0 && (o.Format == FormatPNG || o.Format == FormatGIF || o.Format == FormatJSON) {
+		return fmt.Errorf("mb requires a lossy format (jpeg, webp, avif or auto)")
+	}
 	return nil
+}
+
+// sanitizeFilename keeps a Content-Disposition filename inert: no path
+// separators, quotes, control characters or backslashes.
+func sanitizeFilename(v string) (string, error) {
+	if v == "" || len(v) > 120 {
+		return "", fmt.Errorf("fn must be 1..120 characters")
+	}
+	for _, c := range v {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '-' || c == '_':
+		default:
+			return "", fmt.Errorf("fn may only contain letters, digits, dot, dash and underscore")
+		}
+	}
+	if strings.HasPrefix(v, ".") || strings.Contains(v, "..") {
+		return "", fmt.Errorf("fn must not start with a dot or contain ..")
+	}
+	return v, nil
 }
 
 func parseSigned(v string) (int, error) {
@@ -468,6 +542,12 @@ func (o Ops) Canonical() string {
 		add("bri", strconv.Itoa(o.Brightness))
 	}
 	add("c", string(o.Resize))
+	if o.Algorithm != "" && o.Algorithm != AlgoLanczos3 {
+		add("ra", string(o.Algorithm))
+	}
+	if o.MaxBytes != 0 {
+		add("mb", strconv.Itoa(o.MaxBytes))
+	}
 	if o.Contrast != 0 {
 		add("con", strconv.Itoa(o.Contrast))
 	}
@@ -522,6 +602,27 @@ func (o Ops) Canonical() string {
 		add("w", strconv.Itoa(o.Width))
 	}
 	return b.String()
+}
+
+// SigningCanonical is the canonical form plus the presentation-only parameters.
+// Filename and cachebuster must be signed (they change what the client sees and
+// can be abused to bypass a CDN) but must not split the cache: two URLs that
+// differ only in cb_ or fn_ share one cache entry.
+func (o Ops) SigningCanonical() string {
+	base := o.Canonical()
+	var extra strings.Builder
+	if o.Filename != "" {
+		extra.WriteString(",fn_")
+		extra.WriteString(o.Filename)
+	}
+	if o.Cachebuster != "" {
+		extra.WriteString(",cb_")
+		extra.WriteString(o.Cachebuster)
+	}
+	if extra.Len() == 0 {
+		return base
+	}
+	return base + extra.String()
 }
 
 func trimFloat(f float64) string {
