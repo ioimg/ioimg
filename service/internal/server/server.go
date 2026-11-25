@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"runtime/debug"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,7 +184,45 @@ func (s *Server) Handler() http.Handler {
 
 // dispatch routes one request. Every transport (net/http, celeris, fiber) calls
 // it, so the operational endpoints behave the same on all of them.
+// dispatch is the single entry point every transport adapter calls. Panic
+// recovery lives here rather than in each adapter: celeris and fiber call
+// dispatch directly, so a panic anywhere below would otherwise take the whole
+// process down instead of failing one request. Errors stay loud: the panic is
+// logged with its stack and counted, and the client gets a structured 500 when
+// nothing has been written yet.
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
+	ow := &onceWriter{inner: w}
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		s.log.Error("panic serving request",
+			"method", r.Method, "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))
+		if headerWritten(ow) {
+			// Headers or body already went out; the only honest option left is a
+			// logged, counted failure with a truncated response.
+			s.metrics.RecordError("panic_after_write")
+			return
+		}
+		s.writeError(ow, r, errInternal(fmt.Errorf("panic")))
+	}()
+	s.route(ow, r)
+}
+
+// onceWriter reports whether anything was written, so recovery can decide
+// between a structured error and a truncation.
+type onceWriter struct {
+	inner http.ResponseWriter
+	wrote bool
+}
+
+func (o *onceWriter) Header() http.Header         { return o.inner.Header() }
+func (o *onceWriter) WriteHeader(code int)        { o.wrote = true; o.inner.WriteHeader(code) }
+func (o *onceWriter) Write(b []byte) (int, error) { o.wrote = true; return o.inner.Write(b) }
+func (o *onceWriter) Written() bool { return o.wrote }
+
+func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/healthz":
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

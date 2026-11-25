@@ -84,7 +84,36 @@ type CDNConfig struct {
 }
 
 // Load reads the environment and validates the configuration.
+// validateEnvSyntax rejects malformed values before anything reads them: a typo
+// such as IOIMG_MAX_DIMENSION=8O48 must fail startup, not silently fall back to
+// the default and quietly change production behaviour.
+func validateEnvSyntax() error {
+	var bad []string
+	check := func(keys []string, parse func(string) error) {
+		for _, k := range keys {
+			v := strings.TrimSpace(os.Getenv(k))
+			if v == "" {
+				continue
+			}
+			if err := parse(v); err != nil {
+				bad = append(bad, k+"="+v)
+			}
+		}
+	}
+	check([]string{"IOIMG_CACHE_MAX_MB", "IOIMG_CONCURRENCY", "IOIMG_MAX_DIMENSION", "IOIMG_SOURCE_MAX_BYTES"}, func(v string) error { _, err := strconv.Atoi(v); return err })
+	check([]string{}, func(v string) error { _, err := strconv.ParseFloat(v, 64); return err })
+	check([]string{"IOIMG_ACCESS_LOG", "IOIMG_ALLOW_ANY_HOST", "IOIMG_ALLOW_PRIVATE", "IOIMG_ALLOW_PROJECT_HEADER", "IOIMG_DISABLE_AVIF", "IOIMG_DISABLE_WEBP", "IOIMG_FALLBACK_REDIRECT", "IOIMG_L2_ENABLED", "IOIMG_L2_USE_SSL", "IOIMG_SIGNATURE_EXPIRY_REQUIRED", "IOIMG_SIGNATURE_INCLUDE_EXP", "IOIMG_SIGNED_ONLY"}, func(v string) error { _, err := strconv.ParseBool(v); return err })
+	check([]string{"IOIMG_CONTROL_SYNC", "IOIMG_CONTROL_TIMEOUT", "IOIMG_L2_TIMEOUT", "IOIMG_SOURCE_TIMEOUT"}, func(v string) error { _, err := time.ParseDuration(v); return err })
+	if len(bad) > 0 {
+		return fmt.Errorf("invalid environment value(s): %s", strings.Join(bad, ", "))
+	}
+	return nil
+}
+
 func Load() (Config, error) {
+	if err := validateEnvSyntax(); err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		Addr:             env("IOIMG_ADDR", ":8080"),
 		BaseURL:          strings.TrimRight(env("IOIMG_BASE_URL", "http://localhost:8080"), "/"),

@@ -245,6 +245,22 @@ func (s *Server) runWarm(id string, plans []warmPlan) {
 		}
 		if s.l2 != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// Re-warming a page must not re-upload entries that are already there:
+			// object stores have no batch PUT, and each write is a billable Class A
+			// operation (R2: 1M/month). The cache key pins the pipeline version, so
+			// an existing key with the same size means identical bytes.
+			if st, ok := s.l2.(interface {
+				Stat(context.Context, string) (int64, bool, error)
+			}); ok {
+				if size, exists, err := st.Stat(ctx, p.key); err == nil && exists && size == int64(len(data)) {
+					s.metrics.L2Skipped.Add(1)
+					cancel()
+					s.countUsage(policyIDForPlan(p), int64(len(data)))
+					res.Status = "ok"
+					s.recordWarm(id, res)
+					continue
+				}
+			}
 			if err := s.l2.Put(ctx, p.key, data); err != nil {
 				s.log.Warn("warm l2 write failed", "error", err)
 			}

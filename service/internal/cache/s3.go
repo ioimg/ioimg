@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"sync/atomic"
 	"context"
 	"fmt"
 	"io"
@@ -93,6 +94,20 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	return data, true, nil
 }
 
+// Stat reports whether key exists and its size, using a HEAD request (Class B
+// on S3-compatible stores) instead of downloading it.
+func (s *S3) Stat(ctx context.Context, key string) (int64, bool, error) {
+	info, err := s.client.StatObject(ctx, s.bucket, s.object(key), minio.StatObjectOptions{})
+	if err != nil {
+		resp := minio.ToErrorResponse(err)
+		if resp.Code == "NoSuchKey" || resp.StatusCode == 404 {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return info.Size, true, nil
+}
+
 // Put writes an object.
 func (s *S3) Put(ctx context.Context, key string, data []byte) error {
 	_, err := s.client.PutObject(ctx, s.bucket, s.object(key),
@@ -107,20 +122,46 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 }
 
 // DeletePrefix removes every object under prefix (relative to the L2 prefix).
+//
+// S3 has no batch PUT, but it does have a batch DELETE (up to 1000 keys per
+// request, RemoveObjects), so purging a whole prefix costs one Class A
+// operation per 1000 objects instead of one per object.
 func (s *S3) DeletePrefix(ctx context.Context, prefix string) (int, error) {
-	objects := s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
-		Prefix:    s.object(prefix),
-		Recursive: true,
-	})
-	n := 0
-	for obj := range objects {
-		if obj.Err != nil {
-			return n, obj.Err
+	objects := make(chan minio.ObjectInfo, 1000)
+	listErr := make(chan error, 1)
+	var listed atomic.Int64
+	go func() {
+		defer close(objects)
+		for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+			Prefix:    s.object(prefix),
+			Recursive: true,
+		}) {
+			if obj.Err != nil {
+				listErr <- obj.Err
+				return
+			}
+			listed.Add(1)
+			select {
+			case objects <- obj:
+			case <-ctx.Done():
+				listErr <- ctx.Err()
+				return
+			}
 		}
-		if err := s.client.RemoveObject(ctx, s.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
-			return n, err
+	}()
+
+	var firstErr error
+	for rmErr := range s.client.RemoveObjects(ctx, s.bucket, objects, minio.RemoveObjectsOptions{}) {
+		if rmErr.Err != nil && firstErr == nil {
+			firstErr = rmErr.Err
 		}
-		n++
 	}
-	return n, nil
+	select {
+	case err := <-listErr:
+		if firstErr == nil {
+			firstErr = err
+		}
+	default:
+	}
+	return int(listed.Load()), firstErr
 }

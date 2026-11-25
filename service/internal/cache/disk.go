@@ -4,6 +4,7 @@ package cache
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -96,13 +97,18 @@ func (m readMode) String() string {
 // the transport selector (celeris wants blocking reads, fiber wants io_uring).
 var defaultMode = ReadAuto
 
-// ReadModeFromEnv reads IOIMG_CACHE_READ, falling back to auto.
-func ReadModeFromEnv() ReadMode {
-	switch m := ReadMode(strings.TrimSpace(os.Getenv("IOIMG_CACHE_READ"))); m {
-	case ReadOS, ReadOpenStat, ReadUring, ReadUringLinked, ReadAuto:
-		return m
+// ReadModeFromEnv reads IOIMG_CACHE_READ. A typo must not silently change how
+// the cache is read, so an unknown value is an error rather than "auto".
+func ReadModeFromEnv() (ReadMode, error) {
+	raw := strings.TrimSpace(os.Getenv("IOIMG_CACHE_READ"))
+	if raw == "" {
+		return ReadAuto, nil
 	}
-	return ReadAuto
+	switch m := ReadMode(raw); m {
+	case ReadOS, ReadOpenStat, ReadUring, ReadUringLinked, ReadAuto:
+		return m, nil
+	}
+	return ReadAuto, fmt.Errorf("IOIMG_CACHE_READ=%q is not one of os, openstat, uring, uringlink, auto", raw)
 }
 
 // SetDefaultReadMode sets the mode for disks created afterwards.
@@ -116,7 +122,10 @@ func NewDisk(dir string, maxBytes int64) (*Disk, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	mode := ReadModeFromEnv()
+	mode, err := ReadModeFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	if mode == ReadAuto {
 		mode = defaultMode
 	}

@@ -17,6 +17,7 @@ type Metrics struct {
 	Hits        atomic.Uint64
 	Misses      atomic.Uint64
 	Coalesced   atomic.Uint64
+	L2Skipped   atomic.Uint64
 	Errors      atomic.Uint64
 	BytesIn     atomic.Uint64
 	BytesOut    atomic.Uint64
@@ -50,6 +51,7 @@ func (m *Metrics) Render(cacheEntries int, cacheBytes int64) string {
 	line("ioimg_cache_hits_total", "Cache hits.", "counter", m.Hits.Load())
 	line("ioimg_cache_misses_total", "Cache misses.", "counter", m.Misses.Load())
 	line("ioimg_coalesced_total", "Requests that joined an in-flight transform instead of repeating it.", "counter", m.Coalesced.Load())
+	line("ioimg_l2_writes_skipped_total", "Warm writes skipped because the L2 object already existed.", "counter", m.L2Skipped.Load())
 	line("ioimg_cache_l2_hits_total", "Hits served by the L2 object cache.", "counter", m.L2Hits.Load())
 	line("ioimg_errors_total", "Errors returned.", "counter", m.Errors.Load())
 	line("ioimg_source_bytes_total", "Bytes fetched from origins.", "counter", m.BytesIn.Load())
