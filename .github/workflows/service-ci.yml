@@ -1,0 +1,41 @@
+name: service
+
+on:
+  push:
+    paths:
+      - "service/**"
+      - ".github/workflows/service-ci.yml"
+  pull_request:
+    paths:
+      - "service/**"
+      - ".github/workflows/service-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: service/go.sum
+      - run: gofmt -l ./cmd ./internal | tee /tmp/fmt
+      - run: test ! -s /tmp/fmt
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/ioimg ./cmd/ioimg
+      - run: docker build -t ioimg:ci .
+
+  vips:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Dockerfile.vips -t ioimg:vips-ci .
+      - run: docker build --target build -f Dockerfile.vips -t ioimg:vips-build .
+      - run: docker run --rm --entrypoint sh ioimg:vips-build -c "cd /src && CGO_ENABLED=1 go test -tags vips ./..."

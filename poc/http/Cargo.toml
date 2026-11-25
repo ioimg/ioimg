@@ -1,0 +1,17 @@
+[package]
+name = "poc-http"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+poc-core = { path = "../core" }
+poc-io = { path = "../io" }
+tokio = { workspace = true, optional = true }
+compio = { workspace = true, optional = true }
+cyper-axum = { workspace = true, optional = true }
+
+[features]
+default = []
+tokio-serve = ["dep:tokio", "poc-io/tokio-io"]
+compio-serve = ["dep:compio", "dep:cyper-axum"]

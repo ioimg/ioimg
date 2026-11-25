@@ -1,0 +1,166 @@
+--- a/internal/bootstrap/app.go	2026-11-12 12:38:30.081870507 +0700
++++ b/internal/bootstrap/app.go	2026-11-24 01:57:47.244405107 +0700
+@@ -1,6 +1,8 @@
+ package bootstrap
+ 
+ import (
++	"os"
++
+ 	"kinstack/config"
+ 	"kinstack/internal/pkg/assert"
+ 	"kinstack/internal/pkg/log"
+@@ -79,6 +81,10 @@
+ 	// assets also carry CSP/HSTS; assets are mounted before the session and
+ 	// authorization layers so cached files never touch the session store.
+ 	registerTransportMiddleware(middleware)
++	if os.Getenv("KSTACK_EARLY_ROUTES") == "1" && ExtraRoutes != nil {
++		ExtraRoutes(app)
++		ExtraRoutes = nil
++	}
+ 	registerStaticAssets(app)
+ 	RegisterGlobalMiddleware(middleware)
+ 
+--- a/internal/bootstrap/bootstrap.go	2026-11-13 08:02:55.934633544 +0700
++++ b/internal/bootstrap/bootstrap.go	2026-11-24 01:52:50.748943147 +0700
+@@ -23,6 +23,10 @@
+ 	fiberlog "github.com/gofiber/fiber/v3/log"
+ )
+ 
++// ExtraRoutes is a benchmark hook. Routes mounted here are registered after the
++// global middleware, so they run the full kinstack request chain.
++var ExtraRoutes func(*fiber.App)
++
+ func Run() error {
+ 	cfg := config.Load()
+ 
+@@ -104,6 +108,10 @@
+ 	})
+ 	defer cleanup()
+ 
++	if ExtraRoutes != nil {
++		ExtraRoutes(application)
++	}
++
+ 	return listen(application, cfg.App.Port, logger)
+ }
+ 
+--- a/internal/bootstrap/middleware.go	2026-11-13 08:18:01.189866438 +0700
++++ b/internal/bootstrap/middleware.go	2026-11-24 01:54:57.209950887 +0700
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"context"
++	"os"
+ 
+ 	"kinstack/config"
+ 	"kinstack/internal/pkg/assert"
+@@ -49,7 +50,9 @@
+ 	assert.Assert(d.BearerAuth != nil, "bearer authenticator is required")
+ 
+ 	registerAccessMiddleware(d)
+-	registerContextMiddleware(d)
++	if os.Getenv("KSTACK_SKIP_CONTEXT") != "1" {
++		registerContextMiddleware(d)
++	}
+ 
+ 	d.Log.Infow("Middleware configured")
+ }
+--- a/internal/bootstrap/middleware_security.go	2026-11-13 08:18:01.282383085 +0700
++++ b/internal/bootstrap/middleware_security.go	2026-11-24 01:56:40.807760792 +0700
+@@ -3,6 +3,7 @@
+ import (
+ 	"crypto/sha256"
+ 	"encoding/hex"
++	"os"
+ 	"strings"
+ 	"time"
+ 
+@@ -53,8 +54,12 @@
+ 	}))
+ 
+ 	d.App.Use(requestid.New())
+-	d.App.Use(log.HTTPMiddleware(d.Log))
+-	d.App.Use(d.Telemetry.Middleware())
++	if os.Getenv("KSTACK_SKIP_LOG") != "1" {
++		d.App.Use(log.HTTPMiddleware(d.Log))
++	}
++	if os.Getenv("KSTACK_SKIP_OTEL") != "1" {
++		d.App.Use(d.Telemetry.Middleware())
++	}
+ 
+ 	// CSP reports arrive from browsers without a session or token, so the
+ 	// endpoint is limited and answered before the session layer loads.
+@@ -69,11 +74,19 @@
+ }
+ 
+ func registerAccessMiddleware(d GlobalMiddlewareDependency) {
++	if os.Getenv("KSTACK_SKIP_SESSION") == "1" {
++		return
++	}
+ 	d.App.Use(d.Session)
+ 
+ 	// Bearer traffic is limited per token, not per session. The raw token is
+ 	// hashed before it becomes a storage key; the limiter also covers malformed
+ 	// or revoked tokens so credential probing cannot bypass the auth limiter.
++	if os.Getenv("KSTACK_SKIP_LIMITER") == "1" {
++		registerBearerMiddleware(d)
++		registerCSRFMiddleware(d)
++		return
++	}
+ 	apiLimiter := limiter.New(limiter.Config{
+ 		Storage:    d.SharedStorage,
+ 		Max:        d.Config.App.APIRateLimitMax,
+@@ -99,19 +112,7 @@
+ 
+ 	// Bearer tokens authenticate a request without a browser session. The
+ 	// resolved actor is attached to the request only and never persisted.
+-	d.App.Use(func(c fiber.Ctx) error {
+-		header := c.Get(fiber.HeaderAuthorization)
+-		if !strings.HasPrefix(header, "Bearer ") {
+-			return c.Next()
+-		}
+-		raw := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+-		session, err := d.BearerAuth(c.Context(), raw)
+-		if err != nil || session == nil {
+-			return fiber.ErrUnauthorized
+-		}
+-		d.Actor.SetRequestActor(c, *session)
+-		return c.Next()
+-	})
++	registerBearerMiddleware(d)
+ 
+ 	authLimiter := limiter.New(limiter.Config{
+ 		Storage:    d.SharedStorage,
+@@ -127,6 +128,22 @@
+ 	registerCSRFMiddleware(d)
+ }
+ 
++func registerBearerMiddleware(d GlobalMiddlewareDependency) {
++	d.App.Use(func(c fiber.Ctx) error {
++		header := c.Get(fiber.HeaderAuthorization)
++		if !strings.HasPrefix(header, "Bearer ") {
++			return c.Next()
++		}
++		raw := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
++		session, err := d.BearerAuth(c.Context(), raw)
++		if err != nil || session == nil {
++			return fiber.ErrUnauthorized
++		}
++		d.Actor.SetRequestActor(c, *session)
++		return c.Next()
++	})
++}
++
+ func hstsMaxAge(cfg config.Config) int {
+ 	if cfg.App.Env == "production" {
+ 		return 31536000
+@@ -147,6 +164,9 @@
+ }
+ 
+ func registerCSRFMiddleware(d GlobalMiddlewareDependency) {
++	if os.Getenv("KSTACK_SKIP_CSRF") == "1" {
++		return
++	}
+ 	// CSRF uses the server-side session store (synchronizer token pattern) so
+ 	// the token is bound to one browser session and stays prefork-safe.
+ 	d.App.Use(csrf.New(csrf.Config{

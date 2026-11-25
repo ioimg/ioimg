@@ -1,0 +1,651 @@
+//go:build !vips
+
+// Package imaging decodes, transforms, and encodes images for ioimg.
+//
+// The default build is pure Go (no cgo, works on Windows/macOS/Linux). WebP
+// and AVIF are encoded through WASM builds of libwebp/libavif.
+package imaging
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
+	"math"
+	"strings"
+
+	"ioimg/internal/ops"
+
+	_ "github.com/gen2brain/avif"
+	webp "github.com/gen2brain/webp"
+	xdraw "golang.org/x/image/draw"
+)
+
+// AvailableFormats reports which output encoders this build supports.
+func AvailableFormats() map[ops.Format]bool {
+	return map[ops.Format]bool{
+		ops.FormatJPEG: true,
+		ops.FormatPNG:  true,
+		ops.FormatWebP: true,
+		ops.FormatAVIF: true,
+		ops.FormatGIF:  true,
+		ops.FormatJSON: true,
+	}
+}
+
+// Decode sniffs and decodes an image. Only the first frame of animations is
+// decoded; metadata is deliberately discarded.
+func Decode(data []byte) (image.Image, Info, error) {
+	if len(data) == 0 {
+		return nil, Info{}, ErrDecode
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, Info{}, ErrDecode
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, Info{}, ErrDecode
+	}
+	if cfg.Width > MaxSide || cfg.Height > MaxSide || cfg.Width*cfg.Height > MaxPixels {
+		return nil, Info{}, ErrDimension
+	}
+	animated := false
+	if format == "gif" {
+		if g, err := gif.DecodeAll(bytes.NewReader(data)); err == nil {
+			animated = len(g.Image) > 1
+		}
+	}
+	img, decFormat, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, Info{}, ErrDecode
+	}
+	if decFormat != "" {
+		format = decFormat
+	}
+	img = applyOrientation(img, exifOrientation(data))
+	info := Info{
+		Width:    img.Bounds().Dx(),
+		Height:   img.Bounds().Dy(),
+		Format:   format,
+		HasAlpha: hasAlpha(img),
+		Animated: animated,
+		Bytes:    len(data),
+	}
+	return img, info, nil
+}
+
+// Transform applies ops and encodes the result. It returns the encoded bytes
+// and a phase timing map for the Server-Timing header.
+func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]float64, error) {
+	timings := map[string]float64{}
+	start := nowMs()
+
+	if o.Trim > 0 {
+		img = trim(img, o.Trim)
+	}
+	if o.Rotate != 0 {
+		img = rotate(img, o.Rotate)
+	}
+	if o.Flip != "" {
+		img = flip(img, o.Flip)
+	}
+	if o.Blur > 0 {
+		img = blur(img, o.Blur)
+	}
+	if o.Sharpen > 0 {
+		img = sharpen(img, o.Sharpen)
+	}
+	if o.Width != 0 || o.Height != 0 || o.WidthAuto || o.HeightAuto {
+		var err error
+		img, err = geometry(img, o)
+		if err != nil {
+			return nil, timings, err
+		}
+	}
+	timings["transform"] = nowMs() - start
+
+	start = nowMs()
+	out, err := encode(img, o, opts)
+	timings["encode"] = nowMs() - start
+	if err != nil {
+		return nil, timings, err
+	}
+	return out, timings, nil
+}
+
+func encode(img image.Image, o ops.Ops, opts Options) ([]byte, error) {
+	format := opts.OutFormat
+	quality := opts.Quality
+	if quality == 0 {
+		quality = autoQuality(format, img.Bounds().Dx(), img.Bounds().Dy())
+	}
+	var buf bytes.Buffer
+	switch format {
+	case ops.FormatWebP:
+		if err := webp.Encode(&buf, img, webp.Options{Quality: quality, Method: 4}); err != nil {
+			return nil, fmt.Errorf("encode webp: %w", err)
+		}
+	case ops.FormatAVIF:
+		// AVIF goes through the gen2brain WASM encoder.
+		if err := encodeAVIF(&buf, img, quality); err != nil {
+			return nil, fmt.Errorf("encode avif: %w", err)
+		}
+	case ops.FormatPNG:
+		enc := png.Encoder{CompressionLevel: png.DefaultCompression}
+		if o.Palette {
+			img = toPaletted(img)
+		}
+		if err := enc.Encode(&buf, img); err != nil {
+			return nil, fmt.Errorf("encode png: %w", err)
+		}
+	case ops.FormatGIF:
+		if err := gif.Encode(&buf, img, &gif.Options{NumColors: 256}); err != nil {
+			return nil, fmt.Errorf("encode gif: %w", err)
+		}
+	default:
+		// JPEG has no alpha: flatten onto the requested background (white by
+		// default) so transparent PNGs do not turn black.
+		if hasAlpha(img) {
+			img = flatten(img, o.Background)
+		}
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+			return nil, fmt.Errorf("encode jpeg: %w", err)
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func autoQuality(f ops.Format, w, h int) int {
+	pixels := w * h
+	switch f {
+	case ops.FormatAVIF:
+		if pixels > 1_000_000 {
+			return 50
+		}
+		return 55
+	case ops.FormatWebP:
+		if pixels > 1_000_000 {
+			return 72
+		}
+		return 78
+	default:
+		if pixels > 1_000_000 {
+			return 76
+		}
+		return 82
+	}
+}
+
+// geometry applies the c_* mode and g_* anchor.
+func geometry(src image.Image, o ops.Ops) (image.Image, error) {
+	sw, sh := src.Bounds().Dx(), src.Bounds().Dy()
+	tw, th := o.EffectiveWidth(), o.EffectiveHeight()
+
+	// Width/height "auto" follows the source aspect ratio.
+	if o.WidthAuto {
+		tw = int(math.Round(float64(th) * float64(sw) / float64(sh)))
+	}
+	if o.HeightAuto {
+		th = int(math.Round(float64(tw) * float64(sh) / float64(sw)))
+	}
+	if tw <= 0 && th <= 0 {
+		return src, nil
+	}
+	if tw > ops.MaxDimension || th > ops.MaxDimension {
+		return nil, ErrDimension
+	}
+
+	mode := o.Resize
+	switch mode {
+	case ops.ResizeFit, ops.ResizeScale:
+		allow := o.Enlarge || mode == ops.ResizeScale
+		nw, nh := fitSize(sw, sh, tw, th, allow)
+		if nw == sw && nh == sh {
+			return src, nil
+		}
+		return scale(src, nw, nh), nil
+	case ops.ResizeFill:
+		if tw <= 0 || th <= 0 {
+			nw, nh := fitSize(sw, sh, tw, th, o.Enlarge)
+			return scale(src, nw, nh), nil
+		}
+		scaleF := math.Max(float64(tw)/float64(sw), float64(th)/float64(sh))
+		if !o.Enlarge && scaleF > 1 {
+			scaleF = 1
+		}
+		nw := int(math.Round(float64(sw) * scaleF))
+		nh := int(math.Round(float64(sh) * scaleF))
+		scaled := scale(src, nw, nh)
+		return cropTo(scaled, tw, th, o.Gravity), nil
+	case ops.ResizeForce:
+		nw, nh := tw, th
+		if nw <= 0 {
+			nw = int(math.Round(float64(th) * float64(sw) / float64(sh)))
+		}
+		if nh <= 0 {
+			nh = int(math.Round(float64(tw) * float64(sh) / float64(sw)))
+		}
+		return scale(src, clampSide(nw), clampSide(nh)), nil
+	case ops.ResizePad:
+		if tw <= 0 || th <= 0 {
+			return nil, fmt.Errorf("c_pad requires w and h")
+		}
+		nw, nh := fitSize(sw, sh, tw, th, o.Enlarge)
+		inner := scale(src, nw, nh)
+		canvas := image.NewNRGBA(image.Rect(0, 0, tw, th))
+		fillBackground(canvas, o.Background)
+		dx, dy := anchor(inner.Bounds().Dx(), inner.Bounds().Dy(), tw, th, o.Gravity)
+		xdraw.Draw(canvas, image.Rect(dx, dy, dx+inner.Bounds().Dx(), dy+inner.Bounds().Dy()), inner, image.Point{}, xdraw.Over)
+		return canvas, nil
+	case ops.ResizeCrop:
+		if tw <= 0 || th <= 0 {
+			return nil, fmt.Errorf("c_crop requires w and h")
+		}
+		return cropTo(src, min(tw, sw), min(th, sh), o.Gravity), nil
+	}
+	return src, nil
+}
+
+func fitSize(sw, sh, tw, th int, enlarge bool) (int, int) {
+	scaleF := math.Inf(1)
+	if tw > 0 {
+		scaleF = math.Min(scaleF, float64(tw)/float64(sw))
+	}
+	if th > 0 {
+		scaleF = math.Min(scaleF, float64(th)/float64(sh))
+	}
+	if math.IsInf(scaleF, 1) {
+		return sw, sh
+	}
+	if !enlarge && scaleF > 1 {
+		scaleF = 1
+	}
+	nw := max(1, int(math.Round(float64(sw)*scaleF)))
+	nh := max(1, int(math.Round(float64(sh)*scaleF)))
+	return clampSide(nw), clampSide(nh)
+}
+
+func clampSide(v int) int {
+	if v < 1 {
+		return 1
+	}
+	if v > ops.MaxDimension {
+		return ops.MaxDimension
+	}
+	return v
+}
+
+func scale(src image.Image, w, h int) image.Image {
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
+	return dst
+}
+
+func cropTo(src image.Image, w, h int, g ops.Gravity) image.Image {
+	b := src.Bounds()
+	w = min(w, b.Dx())
+	h = min(h, b.Dy())
+	dx, dy := anchor(w, h, b.Dx(), b.Dy(), g)
+	r := image.Rect(dx, dy, dx+w, dy+h)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	xdraw.Draw(dst, dst.Bounds(), src, r.Min, xdraw.Src)
+	return dst
+}
+
+// anchor returns the offset of an inner box inside an outer box.
+func anchor(iw, ih, ow, oh int, g ops.Gravity) (int, int) {
+	var x, y int
+	switch g {
+	case ops.GravityNorth, ops.GravityNorthEast, ops.GravityNorthWest:
+		y = 0
+	case ops.GravitySouth, ops.GravitySouthEast, ops.GravitySouthWest:
+		y = oh - ih
+	default:
+		y = (oh - ih) / 2
+	}
+	switch g {
+	case ops.GravityWest, ops.GravityNorthWest, ops.GravitySouthWest:
+		x = 0
+	case ops.GravityEast, ops.GravityNorthEast, ops.GravitySouthEast:
+		x = ow - iw
+	default:
+		x = (ow - iw) / 2
+	}
+	return max(0, x), max(0, y)
+}
+
+func rotate(src image.Image, deg int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	switch deg {
+	case 90:
+		dst := image.NewNRGBA(image.Rect(0, 0, h, w))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				dst.Set(h-1-y, x, src.At(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return dst
+	case 180:
+		dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				dst.Set(w-1-x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return dst
+	case 270:
+		dst := image.NewNRGBA(image.Rect(0, 0, h, w))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				dst.Set(y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return dst
+	}
+	return src
+}
+
+func flip(src image.Image, mode string) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			nx, ny := x, y
+			if strings.Contains(mode, "h") {
+				nx = w - 1 - x
+			}
+			if strings.Contains(mode, "v") {
+				ny = h - 1 - y
+			}
+			dst.Set(nx, ny, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
+// blur is a three-pass box blur, which approximates a Gaussian cheaply.
+func blur(src image.Image, amount float64) image.Image {
+	b := src.Bounds()
+	radius := int(math.Round(amount * float64(max(b.Dx(), b.Dy())) / 500))
+	radius = max(1, min(radius, 100))
+	img := toNRGBA(src)
+	for i := 0; i < 3; i++ {
+		img = boxBlur(img, radius)
+	}
+	return img
+}
+
+func boxBlur(src *image.NRGBA, r int) *image.NRGBA {
+	w, h := src.Bounds().Dx(), src.Bounds().Dy()
+	tmp := image.NewNRGBA(image.Rect(0, 0, w, h))
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	// Horizontal pass with a sliding window.
+	for y := 0; y < h; y++ {
+		var sum [4]int
+		count := 0
+		for x := -r; x <= r; x++ {
+			if x >= 0 && x < w {
+				off := src.PixOffset(x, y)
+				sum[0] += int(src.Pix[off])
+				sum[1] += int(src.Pix[off+1])
+				sum[2] += int(src.Pix[off+2])
+				sum[3] += int(src.Pix[off+3])
+			}
+			count++
+		}
+		for x := 0; x < w; x++ {
+			off := tmp.PixOffset(x, y)
+			tmp.Pix[off] = uint8(sum[0] / count)
+			tmp.Pix[off+1] = uint8(sum[1] / count)
+			tmp.Pix[off+2] = uint8(sum[2] / count)
+			tmp.Pix[off+3] = uint8(sum[3] / count)
+			out := x - r
+			in := x + r + 1
+			if out >= 0 {
+				off = src.PixOffset(out, y)
+				sum[0] -= int(src.Pix[off])
+				sum[1] -= int(src.Pix[off+1])
+				sum[2] -= int(src.Pix[off+2])
+				sum[3] -= int(src.Pix[off+3])
+			}
+			if in < w {
+				off = src.PixOffset(in, y)
+				sum[0] += int(src.Pix[off])
+				sum[1] += int(src.Pix[off+1])
+				sum[2] += int(src.Pix[off+2])
+				sum[3] += int(src.Pix[off+3])
+			}
+		}
+	}
+	// Vertical pass.
+	for x := 0; x < w; x++ {
+		var sum [4]int
+		count := 0
+		for y := -r; y <= r; y++ {
+			if y >= 0 && y < h {
+				off := tmp.PixOffset(x, y)
+				sum[0] += int(tmp.Pix[off])
+				sum[1] += int(tmp.Pix[off+1])
+				sum[2] += int(tmp.Pix[off+2])
+				sum[3] += int(tmp.Pix[off+3])
+			}
+			count++
+		}
+		for y := 0; y < h; y++ {
+			off := dst.PixOffset(x, y)
+			dst.Pix[off] = uint8(sum[0] / count)
+			dst.Pix[off+1] = uint8(sum[1] / count)
+			dst.Pix[off+2] = uint8(sum[2] / count)
+			dst.Pix[off+3] = uint8(sum[3] / count)
+			out := y - r
+			in := y + r + 1
+			if out >= 0 {
+				off = tmp.PixOffset(x, out)
+				sum[0] -= int(tmp.Pix[off])
+				sum[1] -= int(tmp.Pix[off+1])
+				sum[2] -= int(tmp.Pix[off+2])
+				sum[3] -= int(tmp.Pix[off+3])
+			}
+			if in < h {
+				off = tmp.PixOffset(x, in)
+				sum[0] += int(tmp.Pix[off])
+				sum[1] += int(tmp.Pix[off+1])
+				sum[2] += int(tmp.Pix[off+2])
+				sum[3] += int(tmp.Pix[off+3])
+			}
+		}
+	}
+	return dst
+}
+
+// sharpen applies an unsharp mask.
+func sharpen(src image.Image, amount float64) image.Image {
+	base := toNRGBA(src)
+	soft := boxBlur(base, 1)
+	w, h := base.Bounds().Dx(), base.Bounds().Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	k := amount / 10 * 1.5
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			off := base.PixOffset(x, y)
+			for c := 0; c < 3; c++ {
+				v := float64(base.Pix[off+c]) + k*(float64(base.Pix[off+c])-float64(soft.Pix[off+c]))
+				dst.Pix[off+c] = uint8(math.Max(0, math.Min(255, v)))
+			}
+			dst.Pix[off+3] = base.Pix[off+3]
+		}
+	}
+	return dst
+}
+
+// trim removes a uniform border, with fuzz on a 0..40 scale.
+func trim(src image.Image, fuzz int) image.Image {
+	img := toNRGBA(src)
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	if w < 3 || h < 3 {
+		return src
+	}
+	ref := img.NRGBAAt(0, 0)
+	limit := uint8(fuzz * 255 / 40)
+	diff := func(c color.NRGBA) bool {
+		return absDiff(c.R, ref.R) > limit || absDiff(c.G, ref.G) > limit || absDiff(c.B, ref.B) > limit || absDiff(c.A, ref.A) > limit
+	}
+	top, bottom, left, right := 0, h-1, 0, w-1
+	for top < h && rowUniform(img, top, diff) {
+		top++
+	}
+	for bottom >= top && rowUniform(img, bottom, diff) {
+		bottom--
+	}
+	for left < w && colUniform(img, left, top, bottom, diff) {
+		left++
+	}
+	for right >= left && colUniform(img, right, top, bottom, diff) {
+		right--
+	}
+	if top >= bottom || left >= right {
+		return src
+	}
+	return cropRect(img, image.Rect(left, top, right+1, bottom+1))
+}
+
+func rowUniform(img *image.NRGBA, y int, diff func(color.NRGBA) bool) bool {
+	for x := 0; x < img.Bounds().Dx(); x++ {
+		if diff(img.NRGBAAt(x, y)) {
+			return false
+		}
+	}
+	return true
+}
+
+func colUniform(img *image.NRGBA, x, top, bottom int, diff func(color.NRGBA) bool) bool {
+	for y := top; y <= bottom; y++ {
+		if diff(img.NRGBAAt(x, y)) {
+			return false
+		}
+	}
+	return true
+}
+
+func cropRect(src image.Image, r image.Rectangle) image.Image {
+	r = r.Intersect(src.Bounds())
+	dst := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
+	xdraw.Draw(dst, dst.Bounds(), src, r.Min, xdraw.Src)
+	return dst
+}
+
+func toPaletted(src image.Image) image.Image {
+	// 3-3-2 uniform palette: predictable and allocation-free per pixel.
+	pal := make(color.Palette, 256)
+	for i := 0; i < 256; i++ {
+		pal[i] = color.NRGBA{
+			R: uint8((i >> 5) & 0x7 * 36),
+			G: uint8((i >> 2) & 0x7 * 36),
+			B: uint8(i & 0x3 * 85),
+			A: 255,
+		}
+	}
+	b := src.Bounds()
+	img := image.NewPaletted(image.Rect(0, 0, b.Dx(), b.Dy()), pal)
+	for y := 0; y < b.Dy(); y++ {
+		for x := 0; x < b.Dx(); x++ {
+			c := color.NRGBAModel.Convert(src.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
+			idx := int(c.R/36)<<5 | int(c.G/36)<<2 | int(c.B/85)
+			img.SetColorIndex(x, y, uint8(idx))
+		}
+	}
+	return img
+}
+
+func flatten(src image.Image, bg string) image.Image {
+	b := src.Bounds()
+	dst := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	fillBackground(dst, bg)
+	xdraw.Draw(dst, dst.Bounds(), src, b.Min, xdraw.Over)
+	return dst
+}
+
+func fillBackground(dst *image.NRGBA, bg string) {
+	c := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+	if bg != "" && bg != "transparent" && len(bg) == 6 {
+		c = color.NRGBA{R: hex(bg[0:2]), G: hex(bg[2:4]), B: hex(bg[4:6]), A: 255}
+	}
+	xdraw.Draw(dst, dst.Bounds(), &image.Uniform{C: c}, image.Point{}, xdraw.Src)
+}
+
+func hex(s string) uint8 {
+	var v uint8
+	for _, c := range s {
+		v <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			v |= uint8(c - '0')
+		case c >= 'a' && c <= 'f':
+			v |= uint8(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			v |= uint8(c-'A') + 10
+		}
+	}
+	return v
+}
+
+func toNRGBA(src image.Image) *image.NRGBA {
+	if n, ok := src.(*image.NRGBA); ok {
+		return n
+	}
+	b := src.Bounds()
+	dst := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	xdraw.Draw(dst, dst.Bounds(), src, b.Min, xdraw.Src)
+	return dst
+}
+
+func hasAlpha(img image.Image) bool {
+	switch img.(type) {
+	case *image.NRGBA, *image.NRGBA64, *image.RGBA, *image.RGBA64, *image.Paletted:
+		b := img.Bounds()
+		step := max(1, (b.Dx()*b.Dy())/4096)
+		i := 0
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				if i%step == 0 {
+					_, _, _, a := img.At(x, y).RGBA()
+					if a < 0xffff {
+						return true
+					}
+				}
+				i++
+			}
+		}
+	}
+	return false
+}
+
+func absDiff(a, b uint8) uint8 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func nowMs() float64 {
+	return float64(timeNowUnixNano()) / 1e6
+}

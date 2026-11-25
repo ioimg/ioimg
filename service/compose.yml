@@ -1,0 +1,32 @@
+# Demo stack: ioimg + a static origin with the PoC photos.
+#
+#   docker compose up --build
+#   open http://localhost:8080/w_400,f_auto/http://origin/photo00.jpg
+#
+# IOIMG_ALLOW_PRIVATE is enabled only because the demo origin is a container on
+# a private network. Never enable it in production.
+services:
+  ioimg:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      IOIMG_ADDR: ":8080"
+      IOIMG_ALLOW_ANY_HOST: "true"
+      IOIMG_ALLOW_PRIVATE: "true"
+      IOIMG_CACHE_DIR: "/var/cache/ioimg"
+      IOIMG_LOG_FORMAT: "text"
+      IOIMG_SIGNING_KEYS: "demo:demo-secret"
+      IOIMG_PRESETS: '{"thumb":"h_320,c_fill,f_auto,q_auto","hero":"w_1600,c_fill,f_auto,q_80"}'
+    volumes:
+      - cache:/var/cache/ioimg
+    depends_on:
+      - origin
+
+  origin:
+    image: nginx:alpine
+    volumes:
+      - ../poc/data/src:/usr/share/nginx/html:ro
+
+volumes:
+  cache:

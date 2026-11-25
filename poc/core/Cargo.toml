@@ -1,0 +1,9 @@
+[package]
+name = "poc-core"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+futures-channel.workspace = true
+image.workspace = true

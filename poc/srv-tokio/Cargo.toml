@@ -1,0 +1,10 @@
+[package]
+name = "ioimg-poc-tokio"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+poc-core = { path = "../core" }
+poc-io = { path = "../io", features = ["tokio-io"] }
+poc-http = { path = "../http", features = ["tokio-serve"] }

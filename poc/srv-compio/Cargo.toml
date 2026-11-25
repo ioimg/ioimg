@@ -1,0 +1,10 @@
+[package]
+name = "ioimg-poc-compio"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+compio.workspace = true
+poc-core = { path = "../core" }
+poc-io = { path = "../io" }
+poc-http = { path = "../http", features = ["compio-serve"] }

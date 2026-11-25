@@ -1,0 +1,19 @@
+# Build artifacts
+bin/
+cache/
+.cache-test/
+*.exe
+
+# Local configuration and secrets
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Test output
+coverage.out
+*.test
