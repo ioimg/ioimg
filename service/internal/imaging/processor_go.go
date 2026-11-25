@@ -9,6 +9,10 @@ import (
 // DefaultProcessor returns the pure-Go pipeline.
 func DefaultProcessor() Processor { return pureProcessor{} }
 
+// Backend reports the active imaging pipeline. The pure-Go fallback is several
+// times slower per transform than libvips, so startup warns when it is linked.
+func Backend() string { return "go" }
+
 type pureProcessor struct{}
 
 func (pureProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error) {

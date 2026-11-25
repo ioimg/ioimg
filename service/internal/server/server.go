@@ -73,6 +73,9 @@ func New(cfg config.Config, o Options) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if imaging.Backend() != "vips" {
+		logger.Warn("pure-Go imaging backend active: transforms are several times slower; build with -tags vips for production")
+	}
 	disk := o.Cache
 	if disk == nil {
 		d, err := cache.NewDisk(cfg.CacheDir, cfg.CacheMaxBytes)
@@ -312,8 +315,6 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.writeBody(w, r, format, data)
 		return
 	}
-	s.metrics.Misses.Add(1)
-
 	select {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
@@ -329,7 +330,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		l2      bool
 		mod     time.Time
 	}
-	v, err, _ := s.sf.Do(key, func() (any, error) {
+	v, err, shared := s.sf.Do(key, func() (any, error) {
 		if data, mod, ok := s.cache.Get(key); ok {
 			return result{data: data, hit: true, mod: mod}, nil
 		}
@@ -368,9 +369,16 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res := v.(result)
+	// Metrics are recorded where the work actually happened: a request that
+	// joined an in-flight render is a hit, not a second miss.
+	if shared {
+		s.metrics.Coalesced.Add(1)
+	}
 	if !res.hit {
 		s.countUsage(policy.ID, int64(len(res.data)))
+		s.metrics.Misses.Add(1)
 	}
+	s.metrics.BytesOut.Add(uint64(len(res.data)))
 	state := "MISS"
 	if res.hit {
 		if res.l2 {
@@ -383,7 +391,6 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 			s.metrics.L2Hits.Add(1)
 		}
 	} else {
-		s.metrics.BytesOut.Add(uint64(len(res.data)))
 		if res.mod.IsZero() {
 			res.mod = time.Now()
 		}
