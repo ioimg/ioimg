@@ -127,6 +127,7 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 	if o.Brightness != 0 || o.Contrast != 0 || o.Saturation != 0 || o.Monochrome {
 		img = adjustColor(img, o.Brightness, o.Contrast, o.Saturation, o.Monochrome)
 	}
+	img = applyColorEffects(img, o)
 	timings["transform"] = nowMs() - start
 
 	start = nowMs()

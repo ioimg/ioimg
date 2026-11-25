@@ -98,3 +98,30 @@ bottleneck CPU (mis. upscale besar), bukan untuk menghemat waktu.
 
 `mb_` aman untuk hot path: ia hanya berjalan saat MISS, deterministik, dan
 hasilnya ikut cache key (`mb_<n>` ada di canonical), jadi ETag tetap stabil.
+
+## Biaya `dt_` / `col_` (diukur, 1 koneksi, MISS, 2400×1600 → w_400 JPEG)
+
+| Ops | rps | p50 |
+| --- | --- | --- |
+| `w_400,f_jpg,q_80` (baseline) | 82 | 10,4 ms |
+| `…,dt_0.6:1a1a2e:e94560` | 47 | 18,2 ms |
+| `…,col_0.4:ff8800:0` | 47 | 18,1 ms |
+| `…,dt_…,col_…` | 45 | 19,0 ms |
+
+HIT tidak terpengaruh sama sekali (80,5k rps, p50 78 µs — di dalam noise).
+
+Di backend vips, duotone/colorize berjalan lewat satu round-trip
+`ToImage` → efek Go → `NewImageFromGoImage`, karena govips tidak punya op
+per-piksel yang murah. Biayanya ~75% dari MISS: 10,4 → 18,2 ms. Dua opsi:
+
+1. **Biarkan** — hasilnya di-cache, jadi biaya ini hanya untuk request pertama
+   per (URL, source) dan hanya untuk URL yang memang meminta efek.
+2. **vips-native** (belum dikerjakan): colorize = `Linear` per band
+   (`a=1-opacity`, `b=opacity×color`) + `BandJoin` untuk alpha; duotone =
+   `Colourspace(BW)` → `Linear` → `BandJoin` → `Composite` dengan bobot
+   intensity. Menghilangkan round-trip, tapi menambah ~6 op vips dan risiko
+   perbedaan hasil antar-backend; untungnya ada test paritas yang bisa
+   menahannya.
+
+Keputusan: mulai dari (1). Efek ini Pro di imgproxy dan bukan hot path; kalau
+ada permintaan volume besar untuk efek ini, baru kerjakan (2).

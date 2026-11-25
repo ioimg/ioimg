@@ -20,7 +20,7 @@ rencana. Item 🟡/⛔ adalah backlog, bukan klaim marketing.
 | Format input luas | 🟡 | +BMP/TIFF; belum JXL/HEIC/ICO/PSD/PDF/video |
 | Filter dasar | ✅ | blur, sharpen, pixelate, brightness, contrast, saturation, monochrome, trim |
 | Watermark | ⛔ | image/text/custom/shadow/rotate belum ada |
-| Transform lanjutan | ⛔ | colorize, gradient, duotone, chained pipelines |
+| Transform lanjutan | 🟡 | duotone + colorize ✅ (keduanya **Pro** imgproxy); gradient & chained pipeline belum |
 | Smart/AI | ⛔ | smart crop, face crop, object crop/blur, autoquality DSSIM |
 | Keamanan URL | 🟡 | signing + expiry + allowlist + SSRF; belum enkripsi source/hashsum/auth header |
 | Sumber gambar | 🟡 | HTTP(S) saja; S3/GCS/Azure/Swift sebagai *cache*, bukan source |
@@ -34,6 +34,38 @@ mengimbangi seluruh halaman fitur imgproxy hari ini, terutama codec eksotis,
 watermark, chained pipeline, smart/AI crop, dan media (PDF/video/PSD). Sebagian
 besar sisanya bisa ditambah bertahap; beberapa hanya realistis di atas libvips
 atau service terpisah.
+
+### 1.1 Mana yang OSS, mana yang Pro (diverifikasi 2026-11-25)
+
+imgproxy menandai opsi berbayar dengan badge **Pro** di
+[docs.imgproxy.net/usage/processing](https://docs.imgproxy.net/usage/processing).
+Diverifikasi langsung di halaman itu, bukan dari ingatan:
+
+- **Pro**: resizing algorithm (`ra`), adjust/brightness/contrast/saturation/
+  monochrome (`bri`/`con`/`sat`/`mono`), unsharp masking (`sharp`), duotone
+  (`dt`), colorize (`col`), gradient, watermark (URL/text/size/rotate/shadow),
+  style, DPI, color profile, autoquality, **JPEG/PNG/WebP/AVIF options**,
+  page/pages, disable animation, video thumbnail, fallback image, hashsum,
+  AES-CBC, best format, crop aspect ratio, object/blur detections.
+- **OSS**: `max_bytes`, `q`, auto-rotate, strip metadata, cache buster, zoom,
+  extend, preset, trim, min/max width & height, resize type, enlarge, rotate,
+  flip, padding, background, gravity, format, `dpr`, max src resolution, max
+  result dimension.
+
+Konsekuensinya untuk dokumen ini:
+
+1. Beberapa opsi yang **sudah** ioimg implementasi adalah fitur **Pro** imgproxy:
+   `ra`, `bri`, `con`, `sat`, `mono`, `sharp`, `dt`, `col`. Delapan fitur
+   berbayar sudah tertutup — bukan "parity OSS", tapi melebihi OSS.
+2. Item yang tersisa di daftar Pro (watermark, gradient, autoquality DSSIM,
+   option codec per-format, DPI, color profile) adalah **pembeda berbayar**,
+   bukan sekadar backlog parity. Prioritasnya keputusan produk, bukan teknis.
+3. Harga resmi Pro (halaman pricing, 2026-11-25): **$49/bulan** atau
+   **$499/tahun** untuk **16 worker**; di atas itu "price on request".
+   Worker = total worker di semua instance (default 2× CPU, `IMGPROXY_WORKERS`).
+   Artinya plafon harga referensi untuk paket "Pro-equivalent" kita ada di
+   sekitar $50/bulan per 16 worker — cukup rendah sehingga menjual fitur Pro
+   secara terpisah sulit; yang dijual adalah kemudahan operasional.
 
 ---
 
@@ -76,8 +108,9 @@ atau service terpisah.
 | Unsharp masking | ✅ | `sharp` (approx.) |
 | Brightness/contrast/saturation | ✅ | `bri`, `con`, `sat`, baru |
 | Monochrome | ✅ | `mono`, baru |
-| Duotone | ⛔ | mudah di atas grayscale + mapping warna |
-| Colorize / gradient overlay | ⛔ | compositing |
+| Duotone | ✅ | `dt_intensity:color1:color2`, baru (Pro di imgproxy); 0 = mati |
+| Colorize | ✅ | `col_opacity:color:keep_alpha`, baru (Pro di imgproxy) |
+| Gradient overlay | ⛔ | `gr_` belum; compositing linear |
 | SVG CSS injection | 🔒 | SVG ditolak |
 | Chained pipelines | ⛔ | butuh parser pipeline; perubahan besar pada cache key |
 
@@ -92,8 +125,8 @@ atau service terpisah.
 | Strip metadata | ✅ | default; `sm_` alias `strip_` (nama imgproxy). Belum ada mode keep-metadata |
 | Keep copyright saat strip | ⛔ | perlu metadata writer |
 | Strip ICC / konversi sRGB | ✅ | encoder Go/vips membuang profil |
-| Advanced JPEG (mozjpeg) | ⛔ | butuh encoder mozjpeg/libvips |
-| Advanced WebP options | ⛔ | method/effort/partisi belum diekspos |
+| Advanced JPEG (mozjpeg) | ⛔ | butuh encoder mozjpeg/libvips (Pro di imgproxy) |
+| Advanced WebP options | ⛔ | method/effort/partisi belum diekspos (Pro di imgproxy) |
 | SVG minification | 🔒 | SVG ditolak |
 
 ### 2.4 Smart features
@@ -173,18 +206,23 @@ atau service terpisah.
 - `mono` (grayscale).
 - Semua masuk canonical URL + cache key, jadi aman untuk signed URL.
 
-### Parity pack 2 — quick wins berikutnya (1–2 sprint)
+### Parity pack 2 — sudah ditambahkan di repo ini
+
+- `mw` / `mh` (minimum width/height) dan `ar_0` (auto-rotate off), `sm` alias `strip`.
+- `dt` (duotone) dan `col` (colorize) — keduanya **Pro** di imgproxy.
+
+### Parity pack 3 — quick wins berikutnya (1–2 sprint)
 
 1. **Fallback image**: `IOIMG_FALLBACK_IMAGE` + override per request.
 2. **Custom source headers**: `IOIMG_SOURCE_HEADERS` per host.
 3. **Skip processing / raw streaming**: `raw_1` atau endpoint `/raw/...`.
-4. **Duotone & colorize**: murah di pipeline piksel yang sudah ada.
-5. **Resize kernel parameter**: `kernel_lanczos|catmull|cubic|linear|nearest`.
+4. **Option codec per-format** (`pngo`/`webpo`/`avifo`) — Pro di imgproxy.
+5. **Gradient** (`gr_`) — Pro di imgproxy, murah di pipeline piksel yang sama.
 6. **Auto palette PNG**: aktifkan kuantisasi jika ukuran turun.
 7. **Animation frame limit**: batas jumlah frame + fallback statis.
 8. **Source hashsum**: `hs_<sha256>` untuk origin yang tidak ingin di-fetch ulang.
 
-### Parity pack 3 — butuh pekerjaan lebih besar
+### Parity pack 4 — butuh pekerjaan lebih besar
 
 1. **Watermark** image/text + shadow/rotate (compositing, font, cache key).
 2. **Chained pipelines** (parser baru; cache key harus mencakup urutan).
@@ -193,7 +231,7 @@ atau service terpisah.
 5. **Source URL encryption** + auth header mode.
 6. **OpenTelemetry** tracing.
 
-### Parity pack 4 — keputusan produk
+### Parity pack 5 — keputusan produk
 
 1. **PDF/video/PSD/GIF→MP4**: worker terpisah (ffmpeg/Poppler), bukan data plane Go murni.
 2. **AI object crop/blur**: model + GPU; jangan dipaksa di request path.

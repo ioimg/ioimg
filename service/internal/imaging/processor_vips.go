@@ -115,7 +115,8 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 	}
 
 	start = time.Now()
-	if err := apply(img, o); err != nil {
+	img, err = apply(img, o)
+	if err != nil {
 		return Result{}, err
 	}
 	if err := enforceMinimumVips(img, o); err != nil {
@@ -165,7 +166,8 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	if err != nil {
 		return Result{}, ErrDecode
 	}
-	defer img.Close()
+	// A closure, not defer img.Close(): applyColorEffectsVips replaces img.
+	defer func() { img.Close() }()
 	info := Info{
 		Width:    img.Width(),
 		Height:   img.Height(),
@@ -180,6 +182,11 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	if err := enforceMinimumVips(img, o); err != nil {
 		return Result{}, err
 	}
+	img, err = applyColorEffectsVips(img, o)
+	if err != nil {
+		return Result{}, err
+	}
+	info.Width, info.Height = img.Width(), img.Height()
 	res := Result{Info: info}
 	timings := map[string]float64{"transform": elapsed(start)}
 
@@ -358,38 +365,38 @@ func stillImage(src []byte) bool {
 	return false
 }
 
-func apply(img *vips.ImageRef, o ops.Ops) error {
+func apply(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error) {
 	if o.Trim > 0 {
 		left, top, width, height, err := img.FindTrim(float64(o.Trim), nil)
 		if err == nil && width > 0 && height > 0 {
 			if err := img.Crop(left, top, width, height); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
 	switch o.Rotate {
 	case 90:
 		if err := img.Rotate(vips.Angle90); err != nil {
-			return err
+			return nil, err
 		}
 	case 180:
 		if err := img.Rotate(vips.Angle180); err != nil {
-			return err
+			return nil, err
 		}
 	case 270:
 		if err := img.Rotate(vips.Angle270); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if o.Flip != "" {
 		if o.Flip == "h" || o.Flip == "hv" {
 			if err := img.Flip(vips.DirectionHorizontal); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		if o.Flip == "v" || o.Flip == "hv" {
 			if err := img.Flip(vips.DirectionVertical); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -399,28 +406,28 @@ func apply(img *vips.ImageRef, o ops.Ops) error {
 			sigma = 0.3
 		}
 		if err := img.GaussianBlur(sigma); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if o.Sharpen > 0 {
 		if err := img.Sharpen(1, 1+o.Sharpen*0.2, 2); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := geometry(img, o); err != nil {
-		return err
+		return nil, err
 	}
 	if o.Pixelate > 0 {
 		if err := pixelateVips(img, o.Pixelate); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if o.Brightness != 0 || o.Contrast != 0 || o.Saturation != 0 || o.Monochrome {
 		if err := adjustColorVips(img, o); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return applyColorEffectsVips(img, o)
 }
 
 func pixelateVips(img *vips.ImageRef, block int) error {
@@ -435,6 +442,27 @@ func pixelateVips(img *vips.ImageRef, block int) error {
 		return err
 	}
 	return img.ResizeWithVScale(float64(w)/float64(bw), float64(h)/float64(bh), vips.KernelNearest)
+}
+
+// applyColorEffectsVips runs the shared colour effects. govips has no cheap
+// per-pixel hook, so duotone/colorize round-trip through a Go image: the effect
+// only runs when the URL asks for it, and the result stays identical to the
+// pure-Go path.
+func applyColorEffectsVips(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error) {
+	if o.Colorize.Opacity <= 0 && o.Duotone.Intensity <= 0 {
+		return img, nil
+	}
+	goImg, err := img.ToImage(&vips.ExportParams{})
+	if err != nil {
+		return nil, fmt.Errorf("decode for colour effects: %w", err)
+	}
+	next, err := vips.NewImageFromGoImage(applyColorEffects(goImg, o))
+	if err != nil {
+		return nil, fmt.Errorf("reload after colour effects: %w", err)
+	}
+	// The caller adopts the returned reference, so release the one we replaced.
+	img.Close()
+	return next, nil
 }
 
 func adjustColorVips(img *vips.ImageRef, o ops.Ops) error {

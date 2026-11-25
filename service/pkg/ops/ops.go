@@ -107,6 +107,10 @@ type Ops struct {
 	Filename string
 	// Cachebuster is a CDN bypass token: signed, never part of the cache key.
 	Cachebuster string
+	// Duotone and Colorize are per-pixel colour effects. Both are imgproxy Pro
+	// features; they never change geometry, only colour.
+	Duotone  Duotone
+	Colorize Colorize
 	// MinWidth and MinHeight bound the resulting size from below (imgproxy
 	// mw/mh): a smaller result is enlarged, preserving the aspect ratio. Zero
 	// means "no minimum".
@@ -331,6 +335,18 @@ func (o *Ops) set(key, value string) error {
 			return fmt.Errorf("sharp must be 0..10")
 		}
 		o.Sharpen = f
+	case "dt", "duotone":
+		d, err := parseDuotone(value)
+		if err != nil {
+			return err
+		}
+		o.Duotone = d
+	case "col", "colorize":
+		c, err := parseColorize(value)
+		if err != nil {
+			return err
+		}
+		o.Colorize = c
 	case "rot":
 		n, err := strconv.Atoi(value)
 		if err != nil || (n != 90 && n != 180 && n != 270) {
@@ -592,11 +608,17 @@ func (o Ops) Canonical() string {
 	if o.MaxBytes != 0 {
 		add("mb", strconv.Itoa(o.MaxBytes))
 	}
+	if o.Colorize.Opacity > 0 {
+		add("col", o.Colorize.canonical())
+	}
 	if o.Contrast != 0 {
 		add("con", strconv.Itoa(o.Contrast))
 	}
 	if o.DPR != 1 {
 		add("dpr", trimFloat(o.DPR))
+	}
+	if o.Duotone.Intensity > 0 {
+		add("dt", o.Duotone.canonical())
 	}
 	if o.Enlarge {
 		add("enlarge", "1")
@@ -706,4 +728,142 @@ func SortedPresetNames(p map[string]string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// -----------------------------------------------------------------------------
+// Colour effects (imgproxy Pro: duotone, colorize)
+// -----------------------------------------------------------------------------
+
+// RGB is a 24-bit colour used by the colour effects.
+type RGB struct{ R, G, B uint8 }
+
+func (c RGB) String() string {
+	return strconv.FormatUint(uint64(c.R)<<16|uint64(c.G)<<8|uint64(c.B), 16)
+}
+
+// Hex returns the colour as six lowercase hex digits, the canonical form used
+// in cache keys.
+func (c RGB) Hex() string {
+	const digits = "0123456789abcdef"
+	return string([]byte{
+		digits[c.R>>4], digits[c.R&0xf],
+		digits[c.G>>4], digits[c.G&0xf],
+		digits[c.B>>4], digits[c.B&0xf],
+	})
+}
+
+// Duotone maps luminance onto a two-colour palette. Intensity 0 disables the
+// effect; Color1 paints the dark areas, Color2 the light ones.
+type Duotone struct {
+	Intensity      float64
+	Color1, Color2 RGB
+}
+
+func (d Duotone) canonical() string {
+	return trimFloat(d.Intensity) + ":" + d.Color1.Hex() + ":" + d.Color2.Hex()
+}
+
+// Colorize paints a solid colour over the image. KeepAlpha preserves the
+// source alpha channel; otherwise the result is opaque.
+type Colorize struct {
+	Opacity   float64
+	Color     RGB
+	KeepAlpha bool
+}
+
+func (c Colorize) canonical() string {
+	keep := "0"
+	if c.KeepAlpha {
+		keep = "1"
+	}
+	return trimFloat(c.Opacity) + ":" + c.Color.Hex() + ":" + keep
+}
+
+// parseDuotone accepts %intensity:%color1:%color2 with every part optional,
+// mirroring imgproxy's defaults (0:000000:ffffff).
+func parseDuotone(v string) (Duotone, error) {
+	d := Duotone{Color2: RGB{0xff, 0xff, 0xff}}
+	parts := strings.Split(v, ":")
+	if len(parts) > 3 {
+		return d, fmt.Errorf("dt takes intensity:color1:color2")
+	}
+	if parts[0] != "" {
+		f, err := strconv.ParseFloat(parts[0], 64)
+		if err != nil || f < 0 || f > 1 {
+			return d, fmt.Errorf("dt intensity must be 0..1")
+		}
+		d.Intensity = f
+	}
+	if len(parts) > 1 && parts[1] != "" {
+		c, err := parseRGB(parts[1])
+		if err != nil {
+			return d, fmt.Errorf("dt color1: %w", err)
+		}
+		d.Color1 = c
+	}
+	if len(parts) > 2 && parts[2] != "" {
+		c, err := parseRGB(parts[2])
+		if err != nil {
+			return d, fmt.Errorf("dt color2: %w", err)
+		}
+		d.Color2 = c
+	}
+	return d, nil
+}
+
+// parseColorize accepts %opacity:%color:%keep_alpha with imgproxy's defaults
+// (1:000:0). Opacity 0 leaves the image untouched.
+func parseColorize(v string) (Colorize, error) {
+	c := Colorize{Opacity: 1}
+	parts := strings.Split(v, ":")
+	if len(parts) > 3 {
+		return c, fmt.Errorf("col takes opacity:color:keep_alpha")
+	}
+	if parts[0] != "" {
+		f, err := strconv.ParseFloat(parts[0], 64)
+		if err != nil || f < 0 || f > 1 {
+			return c, fmt.Errorf("col opacity must be 0..1")
+		}
+		c.Opacity = f
+	}
+	if len(parts) > 1 && parts[1] != "" {
+		rgb, err := parseRGB(parts[1])
+		if err != nil {
+			return c, fmt.Errorf("col color: %w", err)
+		}
+		c.Color = rgb
+	}
+	if len(parts) > 2 && parts[2] != "" {
+		switch parts[2] {
+		case "1", "t", "true":
+			c.KeepAlpha = true
+		case "0", "f", "false":
+			c.KeepAlpha = false
+		default:
+			return c, fmt.Errorf("col keep_alpha must be 0 or 1")
+		}
+	}
+	return c, nil
+}
+
+// parseRGB accepts 3- or 6-digit hex with an optional leading '#'.
+func parseRGB(v string) (RGB, error) {
+	v = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(v)), "#")
+	switch len(v) {
+	case 3:
+		v = string([]byte{v[0], v[0], v[1], v[1], v[2], v[2]})
+	case 6:
+	default:
+		return RGB{}, fmt.Errorf("colour must be 3 or 6 hex digits")
+	}
+	if strings.ContainsFunc(v, func(r rune) bool {
+		return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f')
+	}) {
+		return RGB{}, fmt.Errorf("colour must be 3 or 6 hex digits")
+	}
+	n, err := strconv.ParseUint(v, 16, 32)
+	if err != nil {
+		return RGB{}, fmt.Errorf("colour must be 3 or 6 hex digits")
+	}
+	return RGB{R: uint8(n >> 16), G: uint8(n >> 8), B: uint8(n)}, nil
 }

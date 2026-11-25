@@ -89,8 +89,15 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `fn` | response filename | `[A-Za-z0-9._-]{1,120}` | — | Hanya mengubah `Content-Disposition: inline; filename="…"` |
 | `cb` | cache buster | `[A-Za-z0-9_-]{1,64}` | — | Hanya untuk bypass CDN |
 | `sharpen` | alias `sharp` | | | |
+| `dt` | duotone | `intensity:color1:color2` (0..1; hex 3/6 digit) | `0:000000:ffffff` | Intensitas 0 = mati. `color1` untuk area gelap, `color2` untuk area terang; alias `duotone`. Fitur **Pro** imgproxy |
+| `col` | colorize | `opacity:color:keep_alpha` (0..1; hex; 0/1) | `1:000:0` | Overlay warna rata. `keep_alpha_0` membuat hasil opak; `keep_alpha_1` mempertahankan alpha sumber. Alias `colorize`. Fitur **Pro** imgproxy |
 
-`ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm` mengikuti penamaan imgproxy
+`dt` dan `col` dijalankan berurutan (colorize lalu duotone) setelah resize dan
+adjust; keduanya masuk canonical form (dan karena itu cache key + signature)
+karena mengubah piksel. Di backend vips keduanya melakukan satu round-trip
+`ToImage`/`NewImageFromGoImage` per request — hanya saat opsi dipakai.
+
+`ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm`, `dt`, `col` mengikuti penamaan imgproxy
 supaya migrasi tidak perlu menerjemahkan URL. Nilai default tidak pernah masuk
 canonical form (`ar_1` dan `ra_lanczos3` dinormalkan hilang), jadi cache key dan
 signature URL lama tidak berubah.
