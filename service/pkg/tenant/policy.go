@@ -63,6 +63,7 @@ type Policy struct {
 	Presets          map[string]string
 	Signing          *sign.Signer
 	MonthlyLimit     int64
+	Concurrency      int
 	Usage            Usage
 }
 
@@ -79,6 +80,7 @@ func NewPolicy(p Project) *Policy {
 		FallbackRedirect: p.FallbackRedirect,
 		Presets:          p.Presets,
 		MonthlyLimit:     p.Limits.MonthlyTransforms,
+		Concurrency:      p.Limits.Concurrency,
 		Usage:            p.Usage,
 	}
 	if pol.Presets == nil {

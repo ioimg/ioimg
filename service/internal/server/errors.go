@@ -88,6 +88,10 @@ func errQuotaExceeded() *HTTPError {
 	return &HTTPError{Status: http.StatusTooManyRequests, Code: "quota_exceeded", Message: "monthly transform quota exhausted", Retryable: false}
 }
 
+func errConcurrencyExceeded() *HTTPError {
+	return &HTTPError{Status: http.StatusTooManyRequests, Code: "concurrency_exceeded", Message: "project concurrency limit reached", Retryable: true}
+}
+
 func errRateLimited() *HTTPError {
 	return &HTTPError{Status: http.StatusTooManyRequests, Code: "rate_limited", Message: "too many requests", Retryable: true}
 }

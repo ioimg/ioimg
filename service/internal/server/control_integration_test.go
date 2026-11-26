@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -92,6 +93,7 @@ func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
 		SignedOnly     bool              `json:"signedOnly"`
 		ExpiryRequired bool              `json:"expiryRequired"`
 		Presets        map[string]string `json:"presets"`
+		Concurrency    int               `json:"concurrency"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -108,6 +110,7 @@ func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
 		ExpiryRequired: in.ExpiryRequired,
 		Presets:        in.Presets,
 		SigningKeys:    []tenant.SigningKey{{Kid: kid, Secret: secret}},
+		Limits:         tenant.Limits{Concurrency: in.Concurrency},
 	}
 	f.mu.Lock()
 	f.projects[in.ID] = p
@@ -323,5 +326,102 @@ func TestMultiTenantControlPlane(t *testing.T) {
 			t.Fatalf("allowlist change did not propagate, last status %d", code)
 		}
 		time.Sleep(30 * time.Millisecond)
+	}
+}
+
+// TestProjectConcurrencyLimit pins the admission rule: one project may not take
+// more than its snapshot concurrency, a rejected request is a retryable 429, and
+// the slot is returned when the in-flight request finishes.
+func TestProjectConcurrencyLimit(t *testing.T) {
+	f := newFakeControl(t)
+	f.createProject(t, map[string]any{
+		"id": "slow", "name": "Slow", "allowAnyHost": true, "concurrency": 1,
+	})
+	plane := newControlDataPlane(t, f.srv.URL)
+
+	// An origin that accepts the connection and never answers: the first
+	// request holds the only slot for as long as we need it to.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		connMu sync.Mutex
+		conns  []net.Conn
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			connMu.Lock()
+			conns = append(conns, conn)
+			connMu.Unlock()
+		}
+	}()
+	source := "http://" + ln.Addr().String() + "/slow.jpg"
+	path := "/w_40,f_jpeg/" + source
+
+	first := make(chan int, 1)
+	go func() {
+		resp := f.request(t, plane, "slow", path)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		first <- resp.StatusCode
+	}()
+
+	// Wait until the first request owns the slot (it is blocked on the origin).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		inflight, _ := plane.gate.stats()
+		if inflight["slow"] == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("first request never took a slot: %v", inflight)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	resp := f.request(t, plane, "slow", path)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want 429 concurrency_exceeded, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("want Retry-After 1, got %q", got)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Contains(raw, []byte("concurrency_exceeded")) {
+		t.Fatalf("want concurrency_exceeded in body, got %s", raw)
+	}
+
+	// Release the blocked request and make sure the slot comes back.
+	_ = ln.Close()
+	connMu.Lock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	connMu.Unlock()
+	<-done
+	<-first
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		inflight, _ := plane.gate.stats()
+		if inflight["slow"] == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot was not released: %v", inflight)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !bytes.Contains([]byte(plane.metrics.Render(0, 0)), []byte("ioimg_concurrency_rejected_total 1")) {
+		t.Fatalf("rejection not counted:\n%s", plane.metrics.Render(0, 0))
 	}
 }

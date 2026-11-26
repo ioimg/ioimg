@@ -38,6 +38,7 @@ type Server struct {
 	log     *slog.Logger
 	sf      singleflight.Group
 	sem     chan struct{}
+	gate    *projectGate
 	limit   *limiter
 	version string
 	started time.Time
@@ -115,6 +116,7 @@ func New(cfg config.Config, o Options) (*Server, error) {
 		metrics: m,
 		log:     logger,
 		sem:     make(chan struct{}, conc),
+		gate:    newProjectGate(),
 		version: version,
 		started: time.Now(),
 		formats: imaging.AvailableFormats(),
@@ -356,6 +358,16 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.writeBody(w, r, format, target.Ops.Filename, data)
 		return
 	}
+	// Per-project admission first: a noisy neighbour must not consume the shared
+	// worker pool (or fail because someone else's project filled it).
+	if !s.gate.acquire(policy.ID, policy.Concurrency) {
+		s.metrics.Concurrency.Add(1)
+		w.Header().Set("Retry-After", "1")
+		s.writeError(w, r, errConcurrencyExceeded())
+		return
+	}
+	defer s.gate.release(policy.ID)
+
 	select {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
