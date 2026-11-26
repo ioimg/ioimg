@@ -196,10 +196,83 @@ PNG 38 vs 35).
 install` gagal). rav1e pernah dicoba lewat host dan hasilnya 61 KB vs 37 KB —
 bukan kandidat.
 
-**Kesimpulan:** AVIF tidak bisa dikalahkan dengan tuning. Kalau prioritas produk
-menuntut menang di AVIF, jalannya adalah mengganti tumpukan encoder menjadi
-libavif + SVT-AV1 (2–4× lebih cepat pada kualitas setara) dan menerima bahwa
-byte hasil tidak lagi identik dengan jalur aom — itu keputusan paritas, bukan
-optimasi. Sampai itu diputuskan, mitigasi yang sudah berlaku: AVIF hanya
-muncul lewat `f_auto`, biaya encode dibayar sekali per objek, dan HIT tidak
-menyentuh encoder sama sekali.
+**Kesimpulan awal:** AVIF tidak bisa dikalahkan dengan tuning setelan libvips.
+Bagian di bawah adalah kelanjutannya — dan kesimpulan itu ternyata salah,
+karena yang salah bukan setelan, melainkan encoder yang dipanggil.
+
+## 7. AVIF: libavif + libaom, bukan SVT-AV1
+
+`libvips heifsave` menyembunyikan `cpu-used` libaom di balik knob `effort` yang
+kasar. Memanggil libaom lewat **libavif** memasang `cpu-used` langsung sebagai
+`speed`, dan itu mengubah biayanya secara drastis (in-process, 512×340, q65,
+encode saja, rata-rata 3 run):
+
+| Jalur | waktu | ukuran |
+| --- | --- | --- |
+| `heifsave` effort 1 (kode lama) | 59,4 ms | 37.178 B |
+| libavif speed 8 | 47,4 ms | 37.693 B |
+| **libavif speed 9** | **12,7 ms** | 38.221 B |
+| libavif speed 10 | 12,3 ms | 38.221 B |
+
+Pada 1200×797 polanya sama: 201,4 ms (heifsave) vs 64,7 ms (libavif speed 9).
+Encoder-nya identik (libaom 3.15.3) — yang berbeda hanya jalur pemanggilannya.
+
+### SVT-AV1 diukur dan ditolak
+
+Dugaan "SVT-AV1 2–4× lebih cepat" **tidak berlaku untuk thumbnail**. SVT
+menolak YUV444 ("Only support 420 now"), dan setelah dipaksa 4:2:0 dengan 16
+worker thread:
+
+| Encoder | speed | waktu | ukuran |
+| --- | --- | --- | --- |
+| libavif + aom | 9 | **12 ms** | 37.828 B |
+| libavif + aom | 8 | 29 ms | 37.226 B |
+| SVT-AV1 | 6 | 457 ms | 48.010 B |
+| SVT-AV1 | 8 | 277 ms | 48.402 B |
+| SVT-AV1 | 12 | 272 ms | 48.617 B |
+
+SVT 20–35× lebih lambat dan 28% lebih besar pada 512 px: tiling + worker yang
+dioptimalkan untuk video resolusi besar justru mendominasi di gambar kecil.
+
+### Hasil melalui HTTP (sumber AVIF DIV2K, fit 512, semua MISS)
+
+Satu koneksi, tanpa batas CPU:
+
+| Varian | img/s | ukuran |
+| --- | --- | --- |
+| heifsave effort 1 | 15,0 | 36.790 B |
+| libavif speed 8 | 13,6 | 37.499 B |
+| **libavif speed 9** | **24,4** | 38.089 B |
+
+Dua koneksi, dipin ke 2 core (`taskset -c 2,3` untuk ioimg, `--cpus=2` untuk
+container imgproxy):
+
+| Varian | img/s | ukuran |
+| --- | --- | --- |
+| ioimg heifsave effort 1 | 13,0 | 36.790 B |
+| ioimg libavif speed 8 | 12,1 | 37.499 B |
+| **ioimg libavif speed 9** | **18,5** | 38.089 B |
+| imgproxy speed 9 | 17,6 | 37.603 B |
+
+Lewat image produksi (`ioimg:vips-prod`, `--cpus=2`, 2 koneksi): AVIF **17,2
+img/s / 38.089 B** dengan libavif, 14,8 / 36.790 B dengan heifsave; PNG 39,0,
+JPEG 133,9, WebP 42,1 — ketiganya tidak berubah, karena hanya jalur AVIF yang
+disentuh.
+
+### Posisi akhir
+
+| Format | ioimg | imgproxy | rasio |
+| --- | --- | --- | --- |
+| PNG | 39–51 | 28 | 1,4–1,8× |
+| WebP | 42 | 33 | 1,27× |
+| JPEG | 134 | 142 | 0,94× |
+| **AVIF q65** | **17,2–18,5** | 17,6 | **0,98–1,05×** |
+
+AVIF berubah dari 0,71× (kalah) menjadi ±1,0× (setara) dengan menukar ~1,3%
+byte lebih besar. Masih ada satu tuas yang belum dipakai: `speed 10` tidak lebih
+cepat dari 9, dan `speed 8` menyamakan ukuran dengan imgproxy tetapi kalah
+waktu — jadi 9 adalah titik terbaik pada stack ini.
+
+Konfigurasi: `IOIMG_AVIF_ENCODER=auto|libavif|vips` (auto = libavif bila binary
+dibangun dengan `-tags libavif`), `IOIMG_AVIF_SPEED=0..10` (default 9),
+`IOIMG_AVIF_EFFORT=0..9` hanya untuk jalur heifsave.

@@ -119,6 +119,13 @@ diklaim:
 | `webpo` `compression` | ✅ (`libwebp` method 0..6) | ✅ (reduction effort 0..6) |
 | `webpo` `smart_subsample`, `preset` | tidak didukung | tidak didukung |
 | `avifo` `subsample` | ✅ (4:4:4 / 4:2:2 / 4:2:0) | tidak didukung (govips tidak meneruskan subsample AVIF) |
+
+Catatan AVIF untuk backend vips: encoder dipilih lewat env, bukan URL.
+`IOIMG_AVIF_ENCODER=auto|libavif|vips` (default `auto` = libavif bila binary
+dibangun dengan `-tags libavif`), `IOIMG_AVIF_SPEED=0..10` memetakan langsung ke
+`cpu-used` libaom (default 9), dan `IOIMG_AVIF_EFFORT=0..9` hanya dipakai jalur
+`vips`. libavif ~4× lebih cepat pada byte yang hampir sama; lihat
+[`benchmarks/vs-imgproxy.md`](benchmarks/vs-imgproxy.md) §7.
 | `dpi` | ✅ JPEG (`JFIF`) + PNG (`pHYs`) | ✅ (pass post-encode yang sama) |
 | `hs` | ✅ semua algoritma (constant-time compare) | ✅ (sama, sebelum decode) |
 | `fiu` | ✅ + SSRF guard + metrik `ioimg_fallback_total` | ✅ |

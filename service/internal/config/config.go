@@ -103,7 +103,7 @@ func validateEnvSyntax() error {
 			}
 		}
 	}
-	check([]string{"IOIMG_CACHE_MAX_MB", "IOIMG_CONCURRENCY", "IOIMG_MAX_DIMENSION", "IOIMG_SOURCE_MAX_BYTES", "IOIMG_AVIF_EFFORT", "IOIMG_CELERIS_WORKERS"}, func(v string) error { _, err := strconv.Atoi(v); return err })
+	check([]string{"IOIMG_CACHE_MAX_MB", "IOIMG_CONCURRENCY", "IOIMG_MAX_DIMENSION", "IOIMG_SOURCE_MAX_BYTES", "IOIMG_AVIF_EFFORT", "IOIMG_AVIF_SPEED", "IOIMG_CELERIS_WORKERS"}, func(v string) error { _, err := strconv.Atoi(v); return err })
 	check([]string{}, func(v string) error { _, err := strconv.ParseFloat(v, 64); return err })
 	check([]string{"IOIMG_ACCESS_LOG", "IOIMG_ALLOW_ANY_HOST", "IOIMG_ALLOW_PRIVATE", "IOIMG_ALLOW_PROJECT_HEADER", "IOIMG_DISABLE_AVIF", "IOIMG_DISABLE_WEBP", "IOIMG_FALLBACK_REDIRECT", "IOIMG_L2_ENABLED", "IOIMG_L2_USE_SSL", "IOIMG_SIGNATURE_EXPIRY_REQUIRED", "IOIMG_SIGNATURE_INCLUDE_EXP", "IOIMG_SIGNED_ONLY", "IOIMG_OFFLOAD", "IOIMG_JPEG_PROGRESSIVE"}, func(v string) error { _, err := strconv.ParseBool(v); return err })
 	check([]string{"IOIMG_CONTROL_SYNC", "IOIMG_CONTROL_TIMEOUT", "IOIMG_L2_TIMEOUT", "IOIMG_SOURCE_TIMEOUT"}, func(v string) error { _, err := time.ParseDuration(v); return err })

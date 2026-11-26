@@ -17,6 +17,7 @@
 # being rebuilt (measured: 53.3 ms -> 39.7 ms on a 2040x1356 source).
 ARG VIPS_VERSION=8.18.7
 ARG AOM_VERSION=3.15.3
+ARG AVIF_VERSION=1.4.2
 
 # ---------------------------------------------------------------------------
 # zlib-ng (zlib-compatible ABI)
@@ -58,6 +59,33 @@ RUN cmake -S /tmp/aom -B /tmp/aom-build \
     cmake --install /tmp/aom-build
 
 # ---------------------------------------------------------------------------
+# libavif from source, linked against the libaom above
+# ---------------------------------------------------------------------------
+# libvips' heifsave exposes libaom's cpu-used only as a coarse "effort" knob.
+# Encoding the same thumbnail through libavif instead costs 12.7 ms at speed 9
+# versus 59.4 ms through heifsave for a 2.5% larger file, which is the difference
+# between 13 and 18.5 img/s on two cores (imgproxy: 17.6). SVT-AV1 was measured
+# and rejected: 272 ms and 48.6 KB for the same image.
+FROM debian:trixie AS avif
+ARG AVIF_VERSION
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build pkg-config ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=aom /opt/aom /opt/aom
+RUN curl -fsSL "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${AVIF_VERSION}.tar.gz" \
+    | tar xz -C /tmp && \
+    PKG_CONFIG_PATH=/opt/aom/lib/pkgconfig \
+    cmake -S "/tmp/libavif-${AVIF_VERSION}" -B /tmp/avif-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/libavif \
+      -DCMAKE_PREFIX_PATH=/opt/aom -DBUILD_SHARED_LIBS=ON \
+      -DAVIF_CODEC_AOM=SYSTEM -DAVIF_LIBYUV=OFF -DAVIF_BUILD_APPS=OFF \
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DAVIF_BUILD_TESTS=OFF -DAVIF_ENABLE_WERROR=OFF && \
+    cmake --build /tmp/avif-build -j"$(nproc)" && \
+    cmake --install /tmp/avif-build
+
+# ---------------------------------------------------------------------------
 # libvips from source
 # ---------------------------------------------------------------------------
 FROM debian:trixie AS vips
@@ -96,18 +124,20 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=vips /opt/vips /opt/vips
 COPY --from=zlibng /opt/zlib-ng /opt/zlib-ng
-ENV LD_LIBRARY_PATH=/opt/vips/lib:/opt/zlib-ng/lib \
-    PKG_CONFIG_PATH=/opt/vips/lib/pkgconfig \
-    CGO_CFLAGS="-I/opt/vips/include" \
-    CGO_LDFLAGS="-L/opt/vips/lib -Wl,-rpath,/opt/vips/lib"
+COPY --from=avif /opt/libavif /opt/libavif
+COPY --from=aom /opt/aom /opt/aom
+ENV LD_LIBRARY_PATH=/opt/libavif/lib:/opt/aom/lib:/opt/vips/lib:/opt/zlib-ng/lib \
+    PKG_CONFIG_PATH=/opt/libavif/lib/pkgconfig:/opt/aom/lib/pkgconfig:/opt/vips/lib/pkgconfig \
+    CGO_CFLAGS="-I/opt/vips/include -I/opt/libavif/include" \
+    CGO_LDFLAGS="-L/opt/vips/lib -L/opt/libavif/lib -Wl,-rpath,/opt/vips/lib -Wl,-rpath,/opt/libavif/lib"
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -tags vips \
+RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -tags "vips libavif" \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/ioimg ./cmd/ioimg && \
-    CGO_ENABLED=1 GOOS=linux go build -trimpath -tags vips \
+    CGO_ENABLED=1 GOOS=linux go build -trimpath -tags "vips libavif" \
     -ldflags "-s -w" -o /out/ioimgctl ./cmd/ioimgctl
 
 # ---------------------------------------------------------------------------
@@ -127,10 +157,11 @@ RUN apt-get update \
 COPY --from=aom /opt/aom /opt/aom
 COPY --from=vips /opt/vips /opt/vips
 COPY --from=zlibng /opt/zlib-ng /opt/zlib-ng
+COPY --from=avif /opt/libavif /opt/libavif
 COPY --from=build /out/ioimg /usr/local/bin/ioimg
 COPY --from=build /out/ioimgctl /usr/local/bin/ioimgctl
 USER ioimg
-ENV LD_LIBRARY_PATH=/opt/aom/lib:/opt/vips/lib:/opt/zlib-ng/lib \
+ENV LD_LIBRARY_PATH=/opt/libavif/lib:/opt/aom/lib:/opt/vips/lib:/opt/zlib-ng/lib \
     MALLOC_ARENA_MAX=2 \
     IOIMG_ADDR=:8080 \
     IOIMG_CACHE_DIR=/var/cache/ioimg \

@@ -669,6 +669,22 @@ var (
 	avifEffort     int
 )
 
+// avifUsesLibavif decides which AVIF encoder serves this process. The default
+// is libavif when it is compiled in, because its `speed` knob reaches libaom's
+// cpu-used (12.7 ms) while heifsave's `effort` does not (59 ms for the same
+// bytes). IOIMG_AVIF_ENCODER=vips forces the libvips saver, which is also the
+// only option when the binary was built without -tags libavif.
+func avifUsesLibavif() bool {
+	if !libavifEncoder {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IOIMG_AVIF_ENCODER"))) {
+	case "vips", "libvips", "heif":
+		return false
+	}
+	return true
+}
+
 func avifEffortLevel() int {
 	avifEffortOnce.Do(func() {
 		avifEffort = 1
@@ -706,6 +722,13 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 
 	var out []byte
 	if format == vips.ImageTypeAVIF {
+		if avifUsesLibavif() {
+			out, err := encodeAVIFLibavif(img, quality)
+			if err != nil {
+				return nil, err
+			}
+			return applyDPI(out, format, o)
+		}
 		// ExportParams.Speed is deprecated and does not reach libheif; Effort is
 		// the knob that actually changes encode time.
 		out, _, err := img.ExportAvif(&vips.AvifExportParams{
