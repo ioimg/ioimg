@@ -1032,5 +1032,14 @@ func buildDefaultPolicy(cfg config.Config) *tenant.Policy {
 // (fiber) do better with io_uring.
 func (s *Server) SetCacheReadMode(m cache.ReadMode) { s.cache.SetReadMode(m) }
 
+// AllowedTLSHost reports whether an SNI hostname may receive an ACME
+// certificate. Only custom domains in the currently loaded tenant snapshot
+// qualify; the request allowlist and AllowAnyHost deliberately do not, because
+// they answer a different question and would let arbitrary SNI burn the CA's
+// issuance rate limit. Static deployments add hosts via IOIMG_TLS_HOSTS.
+func (s *Server) AllowedTLSHost(host string) bool {
+	return s.tenants.HasDomain(host)
+}
+
 // CacheReadMode reports the resolved L1 read mode.
 func (s *Server) CacheReadMode() string { return s.cache.ReadMode() }

@@ -95,6 +95,41 @@ func (s *Store) Resolve(host, project string) (*Policy, bool) {
 	return nil, false
 }
 
+// HasDomain reports whether host is a custom domain in the applied snapshot.
+// It is used by the optional ACME host policy: only a domain the control plane
+// currently lists may be issued a certificate. The env-mode fallback policy is
+// included when it was built with explicit domains, but its allowlist is not:
+// AllowedHost answers a different question (who may request images).
+func (s *Store) HasDomain(host string) bool {
+	host = normalizeHost(host)
+	if host == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.byHost[host]; ok {
+		return true
+	}
+	for _, p := range s.wildcard {
+		if p.MatchesDomain(host) {
+			return true
+		}
+	}
+	if s.fallback != nil && s.fallback.MatchesDomain(host) {
+		return true
+	}
+	return false
+}
+
+// normalizeHost lowercases a host and removes a trailing dot and port.
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i:], "]") {
+		host = host[:i]
+	}
+	return strings.TrimSuffix(host, ".")
+}
+
 // Default returns the env-mode fallback policy, if any.
 func (s *Store) Default() *Policy {
 	s.mu.RLock()

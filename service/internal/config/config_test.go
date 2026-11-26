@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -110,5 +112,84 @@ func TestSecurityFeaturesDefaultOff(t *testing.T) {
 	headers, err := parseResponseHeaders("")
 	if err != nil || len(headers) != 0 {
 		t.Fatalf("RESPONSE_HEADERS must default to off: %v %v", headers, err)
+	}
+}
+
+// clearIOIMGEnv removes inherited IOIMG_* values so a Load test is
+// deterministic on a developer machine.
+func clearIOIMGEnv(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "IOIMG_") {
+			t.Setenv(key, "")
+		}
+	}
+}
+
+func TestTLSDisabledByDefault(t *testing.T) {
+	clearIOIMGEnv(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TLS.Enabled {
+		t.Fatal("TLS must be off unless IOIMG_TLS=auto")
+	}
+}
+
+func TestTLSConfigFromEnv(t *testing.T) {
+	clearIOIMGEnv(t)
+	cache := t.TempDir()
+	t.Setenv("IOIMG_CACHE_DIR", cache)
+	t.Setenv("IOIMG_TLS", "auto")
+	t.Setenv("IOIMG_TLS_ADDR", ":8443")
+	t.Setenv("IOIMG_TLS_EMAIL", "ops@example.com")
+	t.Setenv("IOIMG_TLS_HTTP_ADDR", ":8080")
+	t.Setenv("IOIMG_TLS_STAGING", "1")
+	t.Setenv("IOIMG_TLS_HOSTS", "img.example.com, *.static.example ")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.TLS.Enabled {
+		t.Fatal("IOIMG_TLS=auto must enable TLS")
+	}
+	if c.TLS.Addr != ":8443" || c.TLS.Email != "ops@example.com" || c.TLS.HTTPAddr != ":8080" {
+		t.Fatalf("unexpected TLS config: %+v", c.TLS)
+	}
+	if !c.TLS.Staging {
+		t.Fatal("IOIMG_TLS_STAGING=1 must select the staging CA")
+	}
+	wantCache := filepath.Join(cache, "acme")
+	if c.TLS.CacheDir != wantCache {
+		t.Fatalf("cache dir = %q, want %q", c.TLS.CacheDir, wantCache)
+	}
+	if len(c.TLS.Hosts) != 2 || c.TLS.Hosts[0] != "img.example.com" || c.TLS.Hosts[1] != "*.static.example" {
+		t.Fatalf("unexpected TLS hosts: %v", c.TLS.Hosts)
+	}
+}
+
+func TestTLSConfigRejectsBadValues(t *testing.T) {
+	clearIOIMGEnv(t)
+	t.Setenv("IOIMG_CACHE_DIR", t.TempDir())
+	for _, value := range []string{"yes-please", "require"} {
+		t.Setenv("IOIMG_TLS", value)
+		if _, err := Load(); err == nil {
+			t.Fatalf("IOIMG_TLS=%q must be rejected", value)
+		}
+	}
+	t.Setenv("IOIMG_TLS", "auto")
+	for _, host := range []string{"https://img.example.com", "img.example.com:443", "127.0.0.1", "bad host.example"} {
+		t.Setenv("IOIMG_TLS_HOSTS", host)
+		if _, err := Load(); err == nil {
+			t.Fatalf("IOIMG_TLS_HOSTS=%q must be rejected", host)
+		}
+	}
+	t.Setenv("IOIMG_TLS_HOSTS", "img.example.com")
+	t.Setenv("IOIMG_TLS_CA", "http://ca.example/directory")
+	if _, err := Load(); err == nil {
+		t.Fatal("IOIMG_TLS_CA must require https")
 	}
 }

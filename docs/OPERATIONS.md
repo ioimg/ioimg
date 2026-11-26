@@ -43,6 +43,83 @@ Region B: CDN(B) → ioimg(B) → origin
 Control plane (api.ioimg.net) — global, config replicated, Postgres multi-AZ
 ```
 
+### 1.4 HTTPS otomatis (ACME) untuk origin langsung
+
+Default produksi tetap **TLS berhenti di CDN** (Cloudflare/Bunny/Fastly). Pada
+topologi itu ioimg hanya melihat HTTP dari edge, dan CDN yang memegang
+sertifikat serta melakukan terminasi TLS. Jangan aktifkan ACME di belakang CDN:
+edge tidak meneruskan SNI ke origin, jadi tidak ada yang bisa divalidasi.
+
+Aktifkan `IOIMG_TLS=auto` hanya untuk **self-hosted** atau **direct origin**
+tanpa proxy eksternal:
+
+```
+Internet → ioimg :443 (ACME/autocert) → origin
+                    └ :8080 /healthz (HTTP polos, tanpa sertifikat)
+                    └ :80   HTTP-01 + 308 redirect (opsional)
+```
+
+#### DNS dan urutan verifikasi
+
+1. Host harus berupa **custom domain** milik sebuah project di snapshot control
+   plane yang sedang aktif, **atau** terdaftar di `IOIMG_TLS_HOSTS` untuk
+   deployment statis (tanpa control plane). SNI di luar daftar itu selalu
+   ditolak sebelum ada request ke CA — `IOIMG_ALLOWLIST` dan
+   `IOIMG_ALLOW_ANY_HOST` **tidak** memperluas izin TLS, karena keduanya
+   menjawab pertanyaan lain (siapa yang boleh meminta gambar).
+2. **Cek CNAME di control plane harus lulus lebih dulu.** Data plane hanya
+   menerbitkan sertifikat untuk domain yang sudah masuk snapshot; domain yang
+   masih pending verifikasi tidak akan pernah sampai ke ACME. Jadi urutannya:
+   DNS pemilik domain → CNAME/TXT dicek control plane → snapshot berisi domain →
+   ioimg boleh meminta sertifikat.
+3. A/AAAA host harus menunjuk ke origin (bukan ke CDN), dan port 80 harus
+   terjangkau dari internet untuk tantangan **HTTP-01**. Bila port 80 tidak
+   bisa dibuka, autocert tetap bisa memakai **TLS-ALPN-01** di port 443, tetapi
+   `IOIMG_TLS_HTTP_ADDR` tidak diperlukan.
+4. Untuk wildcard policy (`*.example.com`) sertifikat tetap diminta **per nama
+   host** (mis. `a.example.com`); HTTP-01 tidak menerbitkan wildcard cert.
+   Cache sertifikat harus persisten supaya tidak menabrak rate limit CA.
+
+#### Konfigurasi
+
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `IOIMG_TLS` | mati | `auto` mengaktifkan HTTPS ACME. Nilai lain ditolak saat startup. |
+| `IOIMG_TLS_ADDR` | `:443` | Listener HTTPS. Harus berbeda dari `IOIMG_ADDR`. |
+| `IOIMG_TLS_CACHE_DIR` | `<IOIMG_CACHE_DIR>/acme` | Cache akun + sertifikat. Nama file disanitasi; tidak ada path traversal dari SNI. |
+| `IOIMG_TLS_EMAIL` | — | Kontak akun ACME (notifikasi masa berlaku). |
+| `IOIMG_TLS_CA` | Let's Encrypt production | URL direktori ACME, harus `https://`. Menimpa `IOIMG_TLS_STAGING`. |
+| `IOIMG_TLS_STAGING` | `false` | `1` memakai Let's Encrypt staging (sertifikat tidak dipercaya browser; hanya untuk tes). |
+| `IOIMG_TLS_HTTP_ADDR` | — | Listener HTTP-01, biasanya `:80`. Path tantangan dilayani; request lain di-redirect **308** ke HTTPS. |
+| `IOIMG_TLS_HOSTS` | — | Allowlist statis `host.example,*.static.example` untuk deployment tanpa control plane. |
+
+Contoh direct-origin:
+
+```bash
+IOIMG_ADDR=:8080 \
+IOIMG_TLS=auto \
+IOIMG_TLS_EMAIL=ops@example.com \
+IOIMG_TLS_HTTP_ADDR=:80 \
+IOIMG_CACHE_DIR=/var/cache/ioimg \
+./ioimg
+```
+
+Catatan operasional:
+
+- Saat TLS aktif, **/healthz tetap tersedia lewat HTTP polos** di `IOIMG_ADDR`
+  supaya load balancer tidak perlu memasang sertifikat. Route lain di listener
+  itu di-redirect 308 ke HTTPS; listener `IOIMG_TLS_HTTP_ADDR` (bila diisi)
+  melayani tantangan HTTP-01 dan redirect yang sama.
+- Jalur HTTPS memakai transport `net/http` standar karena engine celeris
+  io_uring melakukan rebind socket sendiri dan tidak bisa membawa
+  `tls.Listener`. Untuk throughput sangat tinggi, tetap gunakan CDN di depan
+  dan biarkan TLS berhenti di edge.
+- Uji dengan `IOIMG_TLS_STAGING=1` lebih dulu. staging punya rate limit sendiri
+  dan sertifikatnya tidak akan dipercaya browser.
+- Cache ACME berisi private key akun: direktori dibuat `0700` dan file ditulis
+  `0600`. Backup direktori ini antar-restart/replika bila perlu, tetapi jangan
+  taruh di volume yang dapat dibaca publik.
+
 ## 2. Requirement sistem
 
 | Item | Minimum | Disarankan |

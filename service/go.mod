@@ -12,6 +12,7 @@ require (
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/miretskiy/dio/v2 v2.10.0
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
+	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.41.0
 	golang.org/x/sync v0.25.0
 )
@@ -41,7 +42,6 @@ require (
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.shabbyrobe.org/gocovmerge v0.0.0-20230507111327-fa4f82cfbf4d // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect

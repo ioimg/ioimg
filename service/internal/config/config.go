@@ -8,7 +8,9 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +76,22 @@ type Config struct {
 
 	DisableAVIF bool
 	DisableWebP bool
+
+	TLS TLSConfig
+}
+
+// TLSConfig configures optional ACME-backed HTTPS on the data plane. It is off
+// by default: production deployments terminate TLS at the CDN edge. Enable it
+// for self-hosted or direct-origin setups where no external proxy holds keys.
+type TLSConfig struct {
+	Enabled  bool
+	Addr     string
+	CacheDir string
+	Email    string
+	CA       string
+	HTTPAddr string
+	Staging  bool
+	Hosts    []string
 }
 
 // ResponseHeader is one configured custom response header.
@@ -124,7 +142,7 @@ func validateEnvSyntax() error {
 	}
 	check([]string{"IOIMG_CACHE_MAX_MB", "IOIMG_CONCURRENCY", "IOIMG_MAX_DIMENSION", "IOIMG_SOURCE_MAX_BYTES", "IOIMG_SOURCE_RAW_MAX_BYTES", "IOIMG_AVIF_EFFORT", "IOIMG_AVIF_SPEED", "IOIMG_CELERIS_WORKERS"}, func(v string) error { _, err := strconv.Atoi(v); return err })
 	check([]string{}, func(v string) error { _, err := strconv.ParseFloat(v, 64); return err })
-	check([]string{"IOIMG_ACCESS_LOG", "IOIMG_ALLOW_ANY_HOST", "IOIMG_ALLOW_PRIVATE", "IOIMG_ALLOW_PROJECT_HEADER", "IOIMG_DISABLE_AVIF", "IOIMG_DISABLE_WEBP", "IOIMG_FALLBACK_REDIRECT", "IOIMG_L2_ENABLED", "IOIMG_L2_USE_SSL", "IOIMG_SIGNATURE_EXPIRY_REQUIRED", "IOIMG_SIGNATURE_INCLUDE_EXP", "IOIMG_SIGNED_ONLY", "IOIMG_OFFLOAD", "IOIMG_JPEG_PROGRESSIVE"}, func(v string) error { _, err := strconv.ParseBool(v); return err })
+	check([]string{"IOIMG_ACCESS_LOG", "IOIMG_ALLOW_ANY_HOST", "IOIMG_ALLOW_PRIVATE", "IOIMG_ALLOW_PROJECT_HEADER", "IOIMG_DISABLE_AVIF", "IOIMG_DISABLE_WEBP", "IOIMG_FALLBACK_REDIRECT", "IOIMG_L2_ENABLED", "IOIMG_L2_USE_SSL", "IOIMG_SIGNATURE_EXPIRY_REQUIRED", "IOIMG_SIGNATURE_INCLUDE_EXP", "IOIMG_SIGNED_ONLY", "IOIMG_OFFLOAD", "IOIMG_JPEG_PROGRESSIVE", "IOIMG_TLS_STAGING"}, func(v string) error { _, err := strconv.ParseBool(v); return err })
 	check([]string{"IOIMG_CONTROL_SYNC", "IOIMG_CONTROL_TIMEOUT", "IOIMG_L2_TIMEOUT", "IOIMG_SOURCE_TIMEOUT"}, func(v string) error { _, err := time.ParseDuration(v); return err })
 	if len(bad) > 0 {
 		return fmt.Errorf("invalid environment value(s): %s", strings.Join(bad, ", "))
@@ -264,6 +282,11 @@ func Load() (Config, error) {
 			return c, fmt.Errorf("IOIMG_CONTROL_SYNC and IOIMG_CONTROL_TIMEOUT must be positive")
 		}
 	}
+	tlsCfg, err := loadTLS(c.CacheDir)
+	if err != nil {
+		return c, err
+	}
+	c.TLS = tlsCfg
 	if c.SignedOnly && c.Signing == nil && c.ControlURL == "" {
 		return c, fmt.Errorf("IOIMG_SIGNED_ONLY=true requires IOIMG_SIGNING_KEYS")
 	}
@@ -272,6 +295,78 @@ func Load() (Config, error) {
 		c.AllowAnyHost = true
 	}
 	return c, nil
+}
+
+// loadTLS reads the optional ACME TLS settings. IOIMG_TLS is off unless it is
+// explicitly "auto"; a typo must fail startup rather than silently serve
+// plaintext where the operator expected HTTPS.
+func loadTLS(cacheDir string) (TLSConfig, error) {
+	c := TLSConfig{
+		Addr:     env("IOIMG_TLS_ADDR", ":443"),
+		CacheDir: env("IOIMG_TLS_CACHE_DIR", filepath.Join(cacheDir, "acme")),
+		Email:    strings.TrimSpace(os.Getenv("IOIMG_TLS_EMAIL")),
+		CA:       strings.TrimSpace(os.Getenv("IOIMG_TLS_CA")),
+		HTTPAddr: strings.TrimSpace(os.Getenv("IOIMG_TLS_HTTP_ADDR")),
+		Staging:  envBool("IOIMG_TLS_STAGING", false),
+		Hosts:    splitList(os.Getenv("IOIMG_TLS_HOSTS")),
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IOIMG_TLS"))) {
+	case "", "off", "0", "false", "no":
+		return c, nil
+	case "auto":
+		c.Enabled = true
+	default:
+		return c, fmt.Errorf("IOIMG_TLS must be auto or off")
+	}
+	if c.Addr == "" {
+		return c, fmt.Errorf("IOIMG_TLS_ADDR cannot be empty")
+	}
+	if c.CacheDir == "" {
+		return c, fmt.Errorf("IOIMG_TLS_CACHE_DIR cannot be empty")
+	}
+	if c.CA != "" && !strings.HasPrefix(c.CA, "https://") {
+		return c, fmt.Errorf("IOIMG_TLS_CA must be an https:// directory URL")
+	}
+	for _, host := range c.Hosts {
+		if err := validateTLSHost(host); err != nil {
+			return c, fmt.Errorf("IOIMG_TLS_HOSTS: %w", err)
+		}
+	}
+	return c, nil
+}
+
+// validateTLSHost accepts an exact hostname or *.suffix and rejects anything
+// that could smuggle a scheme, port, or path into the SNI allowlist.
+func validateTLSHost(entry string) error {
+	host := normalizeHostEntry(entry)
+	if host == "" {
+		return fmt.Errorf("empty host entry")
+	}
+	if strings.HasPrefix(host, "*.") {
+		host = host[2:]
+	}
+	if host == "" || strings.ContainsAny(host, "*/ \\@:") {
+		return fmt.Errorf("host %q must be a hostname or *.suffix", entry)
+	}
+	if net.ParseIP(host) != nil {
+		return fmt.Errorf("host %q must not be an IP address", entry)
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 {
+			return fmt.Errorf("host %q has an invalid label", entry)
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("host %q has an invalid label", entry)
+		}
+		for i := 0; i < len(label); i++ {
+			ch := label[i]
+			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+				continue
+			}
+			return fmt.Errorf("host %q has an invalid character", entry)
+		}
+	}
+	return nil
 }
 
 // AllowedHost reports whether a hostname matches the allowlist. Entries may be

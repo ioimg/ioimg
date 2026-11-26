@@ -1,9 +1,15 @@
 package transport
 
 import (
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/ioimg/ioimg/service/internal/acmetls"
 	"github.com/ioimg/ioimg/service/internal/cache"
+	"github.com/ioimg/ioimg/service/internal/config"
 )
 
 func TestPreforkEnv(t *testing.T) {
@@ -54,5 +60,91 @@ func TestReadModeSelection(t *testing.T) {
 		if got := d.ReadMode(); got != want {
 			t.Errorf("SetReadMode(%q) resolved to %q, want %q", mode, got, want)
 		}
+	}
+}
+
+func TestRedirectToHTTPS(t *testing.T) {
+	cases := []struct {
+		name      string
+		host      string
+		target    string
+		httpsAddr string
+		want      string
+	}{
+		{"default port", "img.example.com", "/a/b?c=1", ":443", "https://img.example.com/a/b?c=1"},
+		{"custom port", "img.example.com:8080", "/x", ":8443", "https://img.example.com:8443/x"},
+		{"host with port stripped", "img.example.com:80", "/", ":443", "https://img.example.com/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://"+tc.host+tc.target, nil)
+			rec := httptest.NewRecorder()
+			redirectToHTTPS(rec, req, tc.httpsAddr)
+			if rec.Code != http.StatusPermanentRedirect {
+				t.Fatalf("status = %d, want 308", rec.Code)
+			}
+			if got := rec.Header().Get("Location"); got != tc.want {
+				t.Fatalf("Location = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Non-GET requests are redirected too; 308 preserves the method.
+	req := httptest.NewRequest(http.MethodPost, "http://img.example.com/upload", nil)
+	rec := httptest.NewRecorder()
+	redirectToHTTPS(rec, req, ":443")
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("POST status = %d, want 308", rec.Code)
+	}
+}
+
+func TestPlainHandlerServesHealthAndChallengeOnly(t *testing.T) {
+	mgr, err := acmetls.New(acmetls.Options{CacheDir: t.TempDir(), Hosts: []string{"img.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			t.Errorf("app received %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
+	h := newPlainHandler(mgr, app, ":443", true)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://img.example.com/healthz", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("healthz = %d %q", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://img.example.com/img.jpg", nil))
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("image path status = %d, want 308", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "https://img.example.com/img.jpg" {
+		t.Fatalf("Location = %q", got)
+	}
+
+	// The dedicated challenge listener redirects even /healthz.
+	challengeOnly := newPlainHandler(mgr, app, ":443", false)
+	rec = httptest.NewRecorder()
+	challengeOnly.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://img.example.com/healthz", nil))
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("challenge-only healthz status = %d, want 308", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://img.example.com/.well-known/acme-challenge/missing", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("challenge status = %d, want 404", rec.Code)
+	}
+}
+
+func TestServeTLSRejectsAddressCollision(t *testing.T) {
+	cfg := config.Config{Addr: ":8443", TLS: config.TLSConfig{Enabled: true, Addr: ":8443"}}
+	if err := serveTLS(context.Background(), nil, cfg, slog.Default()); err == nil {
+		t.Fatal("HTTPS and plain HTTP on one address must be rejected")
 	}
 }

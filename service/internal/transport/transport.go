@@ -57,7 +57,13 @@ const (
 )
 
 // Serve runs the server on the best available transport until ctx is canceled.
+// When IOIMG_TLS=auto the standard-library HTTPS listener is used instead, and
+// it owns both the certificate manager and the plain-HTTP challenge/health
+// listeners.
 func Serve(ctx context.Context, srv *server.Server, cfg config.Config, log *slog.Logger) error {
+	if cfg.TLS.Enabled {
+		return serveTLS(ctx, srv, cfg, log)
+	}
 	forced := Name(strings.ToLower(strings.TrimSpace(os.Getenv("IOIMG_TRANSPORT"))))
 	uringOK := cache.UringAvailable()
 	prefork := preforkEnabled()

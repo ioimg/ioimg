@@ -54,6 +54,9 @@ func main() {
 		"control_url", cfg.ControlURL,
 		"concurrency", cfg.Concurrency,
 		"io_uring_available", cache.UringAvailable(),
+		"tls", cfg.TLS.Enabled,
+		"tls_addr", cfg.TLS.Addr,
+		"tls_staging", cfg.TLS.Staging,
 	)
 
 	if err := transport.Serve(ctx, srv, cfg, logger); err != nil {
