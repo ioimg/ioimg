@@ -251,6 +251,7 @@ Semua error non-gambar mengembalikan JSON (kecuali `Accept: image/*` yang memint
 | 422 | `dimension_limit_exceeded` | > 40 MP / > 8192 px | Tidak |
 | 429 | `rate_limited` | Rate limit | Ya (`Retry-After`) |
 | 429 | `quota_exceeded` | Kuota habis | Tidak (sampai reset) |
+| 429 | `concurrency_exceeded` | Batas concurrency proyek tercapai (hanya jalur transform, cache HIT tidak dihitung) | Ya (`Retry-After`) |
 | 502 | `origin_error` | Origin 5xx / koneksi gagal | Ya |
 | 504 | `origin_timeout` | Fetch timeout | Ya |
 | 503 | `overloaded` | Worker pool jenuh | Ya |

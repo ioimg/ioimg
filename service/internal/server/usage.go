@@ -11,12 +11,21 @@ import (
 // usage accumulates per-project counters and reports them to the control
 // plane in batches. Reporting is best-effort: failed batches are merged back.
 type usage struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// pending is what has not been acknowledged by the control plane yet.
 	pending map[string]*tenant.UsageReport
+	// total is everything this process has counted since it started. It never
+	// resets, so a successful flush cannot refill a project's quota: the
+	// control-plane snapshot is only as fresh as the last revision the poller
+	// saw, and a 304 must not look like "no usage".
+	total map[string]*tenant.UsageReport
 }
 
 func newUsage() *usage {
-	return &usage{pending: map[string]*tenant.UsageReport{}}
+	return &usage{
+		pending: map[string]*tenant.UsageReport{},
+		total:   map[string]*tenant.UsageReport{},
+	}
 }
 
 func (u *usage) add(projectID string, transforms, bytesIn, bytesOut int64) {
@@ -33,12 +42,22 @@ func (u *usage) add(projectID string, transforms, bytesIn, bytesOut int64) {
 	r.Transforms += transforms
 	r.BytesIn += bytesIn
 	r.BytesOut += bytesOut
+
+	t := u.total[projectID]
+	if t == nil {
+		t = &tenant.UsageReport{ProjectID: projectID}
+		u.total[projectID] = t
+	}
+	t.Transforms += transforms
+	t.BytesIn += bytesIn
+	t.BytesOut += bytesOut
 }
 
-func (u *usage) pendingFor(projectID string) int64 {
+// totalFor is the authoritative local counter for a project.
+func (u *usage) totalFor(projectID string) int64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if r := u.pending[projectID]; r != nil {
+	if r := u.total[projectID]; r != nil {
 		return r.Transforms
 	}
 	return 0
@@ -73,13 +92,20 @@ func (u *usage) mergeBack(reports []tenant.UsageReport) {
 	}
 }
 
-// quotaRemaining returns the monthly transform budget left, taking usage
-// already reported plus counters not yet flushed into account.
+// quotaRemaining returns the monthly transform budget left. It uses whichever is
+// larger: the control plane's aggregate (which covers every replica, but is only
+// as fresh as the last snapshot revision) or this process' own lifetime count
+// (which is fresher but blind to its peers). Taking the max means a flush, a 304
+// poll, or a control-plane hiccup can never hand a project a second budget.
 func (s *Server) quotaRemaining(p *tenant.Policy) int64 {
 	if p.MonthlyLimit <= 0 {
 		return -1 // unlimited
 	}
-	remaining := p.MonthlyLimit - p.Usage.Transforms - s.usage.pendingFor(p.ID)
+	used := p.Usage.Transforms
+	if local := s.usage.totalFor(p.ID); local > used {
+		used = local
+	}
+	remaining := p.MonthlyLimit - used
 	if remaining < 0 {
 		return 0
 	}
