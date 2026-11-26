@@ -291,3 +291,37 @@ kebanyakan beban.
 
 Regresi HIT: 77,3k rps (p50 85 µs, p99 347 µs) pada binary yang sama — di dalam
 rentang acuan 75–79k, jadi tidak ada regresi dari perubahan ini.
+
+## 12. AVIF: `Speed` tidak pernah sampai ke libheif
+
+`exportAt` mengirim `ExportParams.Speed: 8`. Di govips `Speed` sudah deprecated
+dan diteruskan sebagai `heifEffort`, jadi effort 8 = **encode paling lambat**,
+bukan paling cepat. Terukur pada gambar 400 px, q50:
+
+| effort | waktu | ukuran |
+| --- | --- | --- |
+| 1 | 14,0 ms | 11.617 B |
+| **2** | **22,3 ms** | 9.787 B |
+| **3** | **40,4 ms** | 8.763 B |
+| 4 | 172,8 ms | 8.747 B |
+| 8 | 1.257 ms | 8.786 B |
+
+Effort 3 → 4 menambah 132 ms untuk 16 byte. Default sekarang `3`
+(`IOIMG_AVIF_EFFORT`, 0–9). Efeknya di jalur produksi (binary `-tags vips`,
+HTTP MISS, 1 keep-alive):
+
+| Opsi | sebelum | sesudah |
+| --- | --- | --- |
+| `w_400,f_avif,q_50` | 184,0 ms | **46,0 ms** |
+
+Biaya yang tersisa: ~6 ms fetch + resize, ~40 ms encode effort 3.
+
+## 13. Efek warna: sisa 2 ms adalah salinan memori
+
+`ToGoImage()` sudah menghapus encode+decode (lihat §11). Sisa
+`w_400` 16,2 ms → `dt_`/`col_`/`gr_` ~18,0–18,4 ms adalah dua salinan penuh
+(vips → Go, Go → vips) pada 4 band NRGBA. Menghapusnya butuh operasi vips native
+(`maplut` + LUT), yang akan mengubah matematika luminance: vips `colourspace(BW)`
+memakai koefisien berbeda dari Rec.601 yang dipakai backend pure-Go, sehingga
+output dua backend tidak lagi identik. Itu keputusan paritas, bukan optimasi,
+jadi belum dikerjakan.

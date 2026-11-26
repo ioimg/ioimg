@@ -658,6 +658,27 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 	return fitBytesVips(img, format, o, o.MaxBytes, quality, out)
 }
 
+// avifEffortLevel is libheif's effort knob (0..9). libaom is pathologically
+// slow above 3 in libvips 8.18 (measured: effort 4 = 170 ms, effort 3 = 40 ms,
+// effort 2 = 22 ms for a 400px AVIF, with only 0.2% size difference between 3
+// and 4), so the default is 3 rather than libvips' own 4.
+var (
+	avifEffortOnce sync.Once
+	avifEffort     int
+)
+
+func avifEffortLevel() int {
+	avifEffortOnce.Do(func() {
+		avifEffort = 3
+		if raw := strings.TrimSpace(os.Getenv("IOIMG_AVIF_EFFORT")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 0 && n <= 9 {
+				avifEffort = n
+			}
+		}
+	})
+	return avifEffort
+}
+
 // exportAt maps the per-format encoder overrides onto libvips. Only the knobs
 // libvips actually exposes are applied (PNG interlace, WebP effort); the rest
 // are documented as pure-Go-only in docs/API.md.
@@ -678,10 +699,30 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 		params.Effort = *o.WebPEncoder.Compression
 	}
 
+	var out []byte
+	if format == vips.ImageTypeAVIF {
+		// ExportParams.Speed is deprecated and does not reach libheif; Effort is
+		// the knob that actually changes encode time.
+		out, _, err := img.ExportAvif(&vips.AvifExportParams{
+			Quality:       quality,
+			Effort:        avifEffortLevel(),
+			StripMetadata: true,
+			Bitdepth:      8,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return applyDPI(out, format, o)
+	}
 	out, _, err := img.Export(params)
 	if err != nil {
 		return nil, err
 	}
+	return applyDPI(out, format, o)
+}
+
+// applyDPI adds the density metadata libvips strips on export.
+func applyDPI(out []byte, format vips.ImageType, o ops.Ops) ([]byte, error) {
 	if o.DPI > 0 {
 		// Same post-encode metadata pass as the pure-Go path: libvips strips
 		// density when StripMetadata is on, and this keeps both backends
