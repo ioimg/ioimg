@@ -172,3 +172,48 @@ ditemukan saat bench: downscale Catmull-Rom langsung dari 2400 px ke 80 px
 memakan **72 ms** (kernel support melebar seiring rasio); pra-shrink bilinear ke
 2× target menurunkannya ke **1,7 ms**. HIT tidak terpengaruh (84,8k rps,
 p50 80 µs).
+
+## 8. c_fill/c_force satu sisi (2026-11-26)
+
+`w_800,c_fill` sebelumnya **tidak** memakai shrink-on-load: rencana thumbnail
+mensyaratkan kedua sisi ada, sehingga satu sisi jatuh ke jalur decode penuh.
+Secara semantik satu sisi memang tidak memotong apa pun (setara fit), jadi
+sekarang dipetakan ke `vips_thumbnail_buffer` dengan sisi lain tak terbatas.
+
+Mikro-benchmark in-process, sumber JPEG 2400×1600 (853 KB), `-tags vips`,
+libvips tanpa cache:
+
+| Opsi | jalur cepat | decode penuh | rasio |
+| --- | --- | --- | --- |
+| `w_400` (fit) | **10,52 ms** (95 img/s) | 19,41 ms | 1,85× |
+| `w_800` (fit) | 17,09 ms | 17,81 ms | 1,04× |
+| `w_800,c_fill` | **17,10 ms** | 17,96 ms | 1,05× |
+| `w_400,h_400,c_fill` | **11,11 ms** (90 img/s) | 20,56 ms | 1,85× |
+
+Dua hal yang perlu dicatat:
+
+- `c_fill` satu sisi kini **identik** dengan `w_800` (17,10 vs 17,09 ms) — bukti
+  jalur cepat benar-benar terpakai, dan HTTP MISS-nya turun dari 21,6 ms ke
+  ~17,1 ms (−21%).
+- Pada `w_800` keuntungan shrink-on-load hampir hilang (1,04×): JPEG DCT hanya
+  memberi faktor 1/2 (2400→1200 px) sebelum resize ke 800, jadi biaya encode
+  dan resize mengambil alih. Manfaat terbesar ada di target kecil (`w_400`).
+
+## 9. Biaya efek warna (`dt_`/`col_`/`gr_`)
+
+Angka yang sama, setelah resize:
+
+| Opsi | ms/img | selisih vs `w_400` |
+| --- | --- | --- |
+| `w_400` | 10,52 | — |
+| `w_400,dt_…` | 17,87 | +7,35 |
+| `w_400,col_…` | 17,61 | +7,09 |
+| `w_400,gr_…` | 18,12 | +7,60 |
+
+Jalur vips sekarang mengirim buffer piksel hasil efek langsung lewat
+`vips.NewImageFromMemory` (bukan `NewImageFromGoImage`, yang berjalan dua kali
+atas piksel yang sama). Itu menghapus satu lintasan penuh, tetapi **tidak**
+menjelaskan +7 ms: pada gambar hasil resize 400 px, satu lintasan piksel hanya
+sepersekot dari itu. Biaya sebenarnya belum teridentifikasi — kandidat berikutnya
+adalah `ToImage`/`ExportParams{}` dan interprestasi band alpha. Profil CPU
+diperlukan sebelum ada klaim lebih jauh.

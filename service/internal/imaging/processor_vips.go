@@ -339,13 +339,30 @@ func thumbnailPlan(src []byte, o ops.Ops, opts Options) (thumbnailOp, bool) {
 		tw, th = box(tw, th)
 		return thumbnailOp{width: tw, height: th, crop: vips.InterestingNone, size: vips.SizeBoth}, true
 	case ops.ResizeFill:
+		// With only one side requested there is nothing to crop away: c_fill
+		// degenerates to an aspect-preserving fit to that side (see the slow
+		// path), which shrink-on-load can serve exactly.
 		if tw <= 0 || th <= 0 {
-			return thumbnailOp{}, false
+			if tw <= 0 && th <= 0 {
+				return thumbnailOp{}, false
+			}
+			tw, th = box(tw, th)
+			size := vips.SizeDown
+			if o.Enlarge {
+				size = vips.SizeBoth
+			}
+			return thumbnailOp{width: tw, height: th, crop: vips.InterestingNone, size: size}, true
 		}
 		return thumbnailOp{width: tw, height: th, crop: interesting(o.Gravity), size: vips.SizeBoth}, true
 	case ops.ResizeForce:
+		// c_force on one side is also aspect-preserving, so it maps to the same
+		// single-dimension thumbnail call.
 		if tw <= 0 || th <= 0 {
-			return thumbnailOp{}, false
+			if tw <= 0 && th <= 0 {
+				return thumbnailOp{}, false
+			}
+			tw, th = box(tw, th)
+			return thumbnailOp{width: tw, height: th, crop: vips.InterestingNone, size: vips.SizeBoth}, true
 		}
 		return thumbnailOp{width: tw, height: th, crop: vips.InterestingNone, size: vips.SizeForce}, true
 	}
@@ -485,7 +502,14 @@ func applyColorEffectsVips(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error
 	if err != nil {
 		return nil, fmt.Errorf("decode for colour effects: %w", err)
 	}
-	next, err := vips.NewImageFromGoImage(applyColorEffects(goImg, o))
+	// Hand the pixel buffer back directly instead of going through
+	// NewImageFromGoImage, which walks the image a second time to build the same
+	// RGBA bytes. The effects already produce a non-premultiplied buffer.
+	out := nrgbaOf(applyColorEffects(goImg, o))
+	next, err := vips.NewImageFromMemory(
+		out.Pix, out.Rect.Dx(), out.Rect.Dy(), 4,
+		vips.BandFormatUchar, vips.InterpretationSRGB,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("reload after colour effects: %w", err)
 	}
