@@ -325,11 +325,13 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	if auto {
 		format = ops.Negotiate(r.Header.Get("Accept"), s.formats, false)
 	}
+	best := format == ops.FormatBest
 	key := cache.Key(config.CacheKeyVersion+"|"+s.version+"|"+policy.ID, target.Canonical, target.Source, string(format))
-	etag := `"` + key + `"`
 
 	h := w.Header()
-	h.Set("ETag", etag)
+	if !best {
+		h.Set("ETag", etagFor(key, format, false))
+	}
 	h.Set("X-IOIMG-Format", string(format))
 	if auto {
 		h.Set("Vary", "Accept")
@@ -345,7 +347,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		h.Set("X-IOIMG-Clamped", "1")
 	}
 
-	if inm := r.Header.Get("If-None-Match"); inm != "" && etagMatches(inm, etag) {
+	if inm := r.Header.Get("If-None-Match"); inm != "" && !best && etagMatches(inm, etagFor(key, format, false)) {
 		h.Set("X-IOIMG-Cache", "HIT-L1")
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -354,9 +356,19 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	// Cache hit: no fetch, no transform, no worker slot.
 	if data, mod, ok := s.cache.Get(key); ok {
 		s.metrics.Hits.Add(1)
+		chosen := concreteFormat(format, data)
+		if best {
+			h.Set("X-IOIMG-Format", string(chosen))
+			h.Set("ETag", etagFor(key, chosen, true))
+			if inm := r.Header.Get("If-None-Match"); inm != "" && etagMatches(inm, etagFor(key, chosen, true)) {
+				h.Set("X-IOIMG-Cache", "HIT-L1")
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
 		h.Set("X-IOIMG-Cache", "HIT-L1")
 		h.Set("Last-Modified", mod.UTC().Format(http.TimeFormat))
-		s.writeBody(w, r, format, target.Ops.Filename, data, target.Ops)
+		s.writeBody(w, r, chosen, target.Ops.Filename, data, target.Ops)
 		return
 	}
 	// Per-project admission first: a noisy neighbour must not consume the shared
@@ -379,6 +391,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 
 	type result struct {
 		data    []byte
+		format  ops.Format
 		timings map[string]float64
 		hit     bool
 		l2      bool
@@ -386,7 +399,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err, shared := s.sf.Do(key, func() (any, error) {
 		if data, mod, ok := s.cache.Get(key); ok {
-			return result{data: data, hit: true, mod: mod}, nil
+			return result{data: data, format: concreteFormat(format, data), hit: true, mod: mod}, nil
 		}
 		if s.l2 != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -396,10 +409,10 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 				s.log.Warn("l2 read failed", "error", l2err)
 			} else if ok {
 				_ = s.cache.Put(key, data)
-				return result{data: data, hit: true, l2: true, mod: time.Now()}, nil
+				return result{data: data, format: concreteFormat(format, data), hit: true, l2: true, mod: time.Now()}, nil
 			}
 		}
-		data, timings, err := s.render(r.Context(), target, format)
+		data, timings, chosen, err := s.render(r.Context(), target, format)
 		if err != nil {
 			return nil, err
 		}
@@ -416,7 +429,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 				}
 			}()
 		}
-		return result{data: data, timings: timings}, nil
+		return result{data: data, format: chosen, timings: timings}, nil
 	})
 	if err != nil {
 		s.writeError(w, r, asHTTPError(err))
@@ -451,6 +464,18 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Last-Modified", res.mod.UTC().Format(http.TimeFormat))
 	}
 	h.Set("X-IOIMG-Cache", state)
+	chosen := res.format
+	if chosen == "" || chosen == ops.FormatBest {
+		chosen = concreteFormat(format, res.data)
+	}
+	if best {
+		h.Set("X-IOIMG-Format", string(chosen))
+		h.Set("ETag", etagFor(key, chosen, true))
+		if inm := r.Header.Get("If-None-Match"); inm != "" && etagMatches(inm, etagFor(key, chosen, true)) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
 	if res.timings != nil {
 		if _, ok := res.timings["fallback"]; ok {
 			h.Set("X-IOIMG-Fallback", "1")
@@ -458,7 +483,28 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Server-Timing", serverTiming(res.timings))
 		h.Set("X-IOIMG-Transform-Ms", strconv.FormatFloat(res.timings["total"], 'f', 2, 64))
 	}
-	s.writeBody(w, r, format, target.Ops.Filename, res.data, target.Ops)
+	s.writeBody(w, r, chosen, target.Ops.Filename, res.data, target.Ops)
+}
+
+// concreteFormat resolves f_best to the winner. For a cache hit only the
+// encoded bytes are available, which is enough to derive the media type.
+func concreteFormat(requested ops.Format, data []byte) ops.Format {
+	if requested != ops.FormatBest {
+		return requested
+	}
+	if f := imaging.FormatFromBytes(data); f != "" {
+		return f
+	}
+	return ops.FormatJPEG
+}
+
+// etagFor keeps the cache key as the identity and, for f_best, appends the
+// winning format so a changed winner cannot be revalidated as the old one.
+func etagFor(key string, format ops.Format, best bool) string {
+	if best {
+		return `"` + key + "-" + string(format) + `"`
+	}
+	return `"` + key + `"`
 }
 
 // skipApplies reports whether skp_ matches both the probed source format and
@@ -485,7 +531,7 @@ func normalizeSkipExtension(ext string) string {
 }
 
 // render fetches, decodes, transforms, and encodes one image.
-func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byte, map[string]float64, error) {
+func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byte, map[string]float64, ops.Format, error) {
 	timings := map[string]float64{}
 	total := time.Now()
 
@@ -505,13 +551,13 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 		// fetched. It is fetched through the same SSRF-guarded fetcher, so a
 		// fallback URL cannot reach anything the source could not.
 		if t.Ops.FallbackURL == "" {
-			return nil, timings, mapSourceError(err)
+			return nil, timings, format, mapSourceError(err)
 		}
 		s.metrics.Fallback.Add(1)
 		fallback, ferr := fetch(ctx, t.Ops.FallbackURL)
 		if ferr != nil {
 			s.log.Warn("fallback fetch failed", "error", ferr, "source_error", err)
-			return nil, timings, mapSourceError(err)
+			return nil, timings, format, mapSourceError(err)
 		}
 		src, usedFallback = fallback, true
 	}
@@ -528,20 +574,20 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	if t.Ops.Raw {
 		res, err := imaging.PassThrough(src.Body)
 		if err != nil {
-			return nil, timings, errDecode()
+			return nil, timings, format, errDecode()
 		}
 		for k, v := range res.Timings {
 			timings[k] = v
 		}
 		timings["total"] = ms(total)
-		return res.Data, timings, nil
+		return res.Data, timings, concreteFormat(format, res.Data), nil
 	}
 
 	// hs_: verify the digest before spending CPU on a decode. A fallback image is
 	// not the source the hashsum was computed for, so it is not verified.
 	if !usedFallback && !t.Ops.Hashsum.IsZero() {
 		if !hashsumMatches(t.Ops.Hashsum, src.Body) {
-			return nil, timings, errHashsumMismatch()
+			return nil, timings, format, errHashsumMismatch()
 		}
 	}
 
@@ -551,14 +597,14 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	if len(t.Ops.SkipProcessing) > 0 {
 		res, err := imaging.PassThrough(src.Body)
 		if err != nil {
-			return nil, timings, errDecode()
+			return nil, timings, format, errDecode()
 		}
 		if res.Info.Format != "" && skipApplies(t.Ops.SkipProcessing, res.Info.Format, format) {
 			for k, v := range res.Timings {
 				timings[k] = v
 			}
 			timings["total"] = ms(total)
-			return res.Data, timings, nil
+			return res.Data, timings, format, nil
 		}
 	}
 
@@ -571,13 +617,13 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 				wmURL = s.cfg.WatermarkURL
 			}
 			if wmURL == "" {
-				return nil, timings, errWatermarkMissing()
+				return nil, timings, format, errWatermarkMissing()
 			}
 		}
 		wm, wmErr := s.watermarkFor(ctx, t.Ops.WatermarkText, wmURL)
 		if wmErr != nil {
 			s.log.Warn("watermark unavailable", "error", wmErr)
-			return nil, timings, errWatermarkMissing()
+			return nil, timings, format, errWatermarkMissing()
 		}
 		opts.Watermark = wm
 	}
@@ -586,7 +632,7 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	res, err := runPipeline(s.proc, src.Body, t.Ops, opts)
 	if err != nil {
 		if usedFallback {
-			return nil, timings, errDecode()
+			return nil, timings, format, errDecode()
 		}
 		// A corrupt/undecodable source falls back to the fallback image too: the
 		// commercial products treat "no usable image" the same way.
@@ -601,12 +647,12 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 		}
 		if err != nil {
 			if errors.Is(err, imaging.ErrDimension) {
-				return nil, timings, errDimension()
+				return nil, timings, format, errDimension()
 			}
 			if errors.Is(err, imaging.ErrDecode) {
-				return nil, timings, errDecode()
+				return nil, timings, format, errDecode()
 			}
-			return nil, timings, errInternal(err)
+			return nil, timings, format, errInternal(err)
 		}
 	}
 	s.metrics.TransformNs.Add(uint64(time.Since(procStart).Nanoseconds()))
@@ -627,13 +673,17 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 			"exif":          map[string]any{"orientation": 1},
 		})
 		if err != nil {
-			return nil, timings, errInternal(err)
+			return nil, timings, format, errInternal(err)
 		}
 		timings["total"] = ms(total)
-		return payload, timings, nil
+		return payload, timings, format, nil
 	}
 	timings["total"] = ms(total)
-	return res.Data, timings, nil
+	chosen := res.Format
+	if chosen == "" || chosen == ops.FormatBest {
+		chosen = concreteFormat(format, res.Data)
+	}
+	return res.Data, timings, chosen, nil
 }
 
 // runPipeline runs the image pipeline, by default on its own goroutine.

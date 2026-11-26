@@ -11,6 +11,6 @@ import (
 // libavifEncoder reports whether the libavif path is compiled in.
 const libavifEncoder = false
 
-func encodeAVIFLibavif(*vips.ImageRef, int) ([]byte, error) {
+func encodeAVIFLibavif(*vips.ImageRef, int, bool) ([]byte, error) {
 	return nil, errors.New("avif: libavif support is not compiled in")
 }

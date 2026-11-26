@@ -24,7 +24,7 @@ func TestAvifLibavifEncode(t *testing.T) {
 	}
 	defer img.Close()
 
-	out, err := encodeAVIFLibavif(img, 60)
+	out, err := encodeAVIFLibavif(img, 60, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

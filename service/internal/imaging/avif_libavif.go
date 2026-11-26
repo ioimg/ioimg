@@ -13,10 +13,27 @@ package imaging
 // costs ~4x the encode time for the same bytes; libavif exposes it as `speed`.
 static avifResult encodeAVIF(const uint8_t *rgba, int width, int height,
                              int speed, int quality, int threads,
+                             const uint8_t *exif, size_t exifLen,
+                             const uint8_t *icc, size_t iccLen,
                              uint8_t **out, size_t *outLen) {
 	avifImage *img = avifImageCreate(width, height, 8, AVIF_PIXEL_FORMAT_YUV444);
 	if (!img) {
 		return AVIF_RESULT_OUT_OF_MEMORY;
+	}
+
+	if (exifLen > 0) {
+		avifResult r = avifImageSetMetadataExif(img, exif, exifLen);
+		if (r != AVIF_RESULT_OK) {
+			avifImageDestroy(img);
+			return r;
+		}
+	}
+	if (iccLen > 0) {
+		avifResult r = avifImageSetProfileICC(img, icc, iccLen);
+		if (r != AVIF_RESULT_OK) {
+			avifImageDestroy(img);
+			return r;
+		}
 	}
 
 	avifRGBImage src;
@@ -110,8 +127,10 @@ func avifSpeedLevel() int {
 	return avifSpeed
 }
 
-// encodeAVIFLibavif encodes the image as AVIF with libavif + libaom.
-func encodeAVIFLibavif(img *vips.ImageRef, quality int) ([]byte, error) {
+// encodeAVIFLibavif encodes the image as AVIF with libavif + libaom. When
+// keepMetadata is set, the source EXIF and ICC blobs are attached to the AVIF
+// container; the libvips heifsave path is not involved.
+func encodeAVIFLibavif(img *vips.ImageRef, quality int, keepMetadata bool) ([]byte, error) {
 	goImg, err := img.ToGoImage()
 	if err != nil {
 		return nil, fmt.Errorf("avif: %w", err)
@@ -124,12 +143,20 @@ func encodeAVIFLibavif(img *vips.ImageRef, quality int) ([]byte, error) {
 		return nil, errors.New("avif: empty image")
 	}
 
+	var exif, icc []byte
+	if keepMetadata {
+		exif = img.GetBlob("exif-data")
+		icc = img.GetBlob("icc-profile-data")
+	}
+	exifPtr, exifLen := cBytes(exif)
+	iccPtr, iccLen := cBytes(icc)
 	var out *C.uint8_t
 	var outLen C.size_t
 	res := C.encodeAVIF(
 		(*C.uint8_t)(unsafe.Pointer(&rgba.Pix[0])),
 		C.int(rgba.Rect.Dx()), C.int(rgba.Rect.Dy()),
 		C.int(avifSpeedLevel()), C.int(quality), C.int(1),
+		exifPtr, exifLen, iccPtr, iccLen,
 		&out, &outLen,
 	)
 	if res != C.AVIF_RESULT_OK {
@@ -137,4 +164,11 @@ func encodeAVIFLibavif(img *vips.ImageRef, quality int) ([]byte, error) {
 	}
 	defer C.free(unsafe.Pointer(out))
 	return C.GoBytes(unsafe.Pointer(out), C.int(outLen)), nil
+}
+
+func cBytes(b []byte) (*C.uint8_t, C.size_t) {
+	if len(b) == 0 {
+		return nil, 0
+	}
+	return (*C.uint8_t)(unsafe.Pointer(&b[0])), C.size_t(len(b))
 }

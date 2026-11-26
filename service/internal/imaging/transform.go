@@ -101,6 +101,13 @@ func decode(data []byte, autoRotate bool, o ops.Ops) (image.Image, Info, error) 
 // Transform applies ops and encodes the result. It returns the encoded bytes
 // and a phase timing map for the Server-Timing header.
 func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]float64, error) {
+	out, _, timings, err := transformResult(img, o, opts)
+	return out, timings, err
+}
+
+// transformResult is Transform plus the concrete output format, which is needed
+// when f_best lets the encoder pick the winner.
+func transformResult(img image.Image, o ops.Ops, opts Options) ([]byte, ops.Format, map[string]float64, error) {
 	timings := map[string]float64{}
 	start := nowMs()
 
@@ -123,7 +130,7 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 		var err error
 		img, err = geometry(img, o)
 		if err != nil {
-			return nil, timings, err
+			return nil, "", timings, err
 		}
 	}
 	img = enforceMinimum(img, o)
@@ -151,23 +158,66 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 	timings["transform"] = nowMs() - start
 
 	start = nowMs()
-	out, err := encode(img, o, opts)
+	out, format, err := encode(img, o, opts)
 	timings["encode"] = nowMs() - start
 	if err != nil {
-		return nil, timings, err
+		return nil, "", timings, err
 	}
-	return out, timings, nil
+	return out, format, timings, nil
 }
 
-func encode(img image.Image, o ops.Ops, opts Options) ([]byte, error) {
+func encode(img image.Image, o ops.Ops, opts Options) ([]byte, ops.Format, error) {
+	if opts.OutFormat == ops.FormatBest {
+		return encodeBest(img, o, opts)
+	}
 	format := opts.OutFormat
 	quality := opts.Quality
 	if quality == 0 {
 		quality = autoQuality(format, img.Bounds().Dx(), img.Bounds().Dy())
 	}
+	out, err := encodeFormat(img, o, opts, format, quality)
+	if err != nil {
+		return nil, "", err
+	}
+	return out, format, nil
+}
+
+// encodeBest tries the lossy web formats with one transform and keeps the
+// smallest result. All candidates use the requested quality; q_auto keeps the
+// per-format heuristic so f_best does not silently degrade one codec.
+func encodeBest(img image.Image, o ops.Ops, opts Options) ([]byte, ops.Format, error) {
+	var best []byte
+	var bestFormat ops.Format
+	var firstErr error
+	for _, format := range []ops.Format{ops.FormatJPEG, ops.FormatWebP, ops.FormatAVIF} {
+		quality := opts.Quality
+		if quality == 0 {
+			quality = autoQuality(format, img.Bounds().Dx(), img.Bounds().Dy())
+		}
+		out, err := encodeFormat(img, o, opts, format, quality)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if best == nil || len(out) < len(best) {
+			best, bestFormat = out, format
+		}
+	}
+	if best == nil {
+		return nil, "", firstErr
+	}
+	return best, bestFormat, nil
+}
+
+func encodeFormat(img image.Image, o ops.Ops, opts Options, format ops.Format, quality int) ([]byte, error) {
 	out, err := encodeAt(img, o, format, quality)
 	if err != nil {
 		return nil, err
+	}
+	if o.KeepMetadata {
+		out = carryMetadata(out, format, opts.SourceMetadata)
 	}
 	if o.DPI > 0 {
 		out = setDPI(out, string(format), o.DPI)
@@ -178,6 +228,9 @@ func encode(img image.Image, o ops.Ops, opts Options) ([]byte, error) {
 	res, err := fitBytes(img, o, format, quality, out)
 	if err != nil {
 		return nil, err
+	}
+	if o.KeepMetadata {
+		res = carryMetadata(res, format, opts.SourceMetadata)
 	}
 	if o.DPI > 0 {
 		res = setDPI(res, string(format), o.DPI)

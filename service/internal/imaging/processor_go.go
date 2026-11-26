@@ -22,17 +22,24 @@ func (pureProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Info: info}
+	res := Result{Info: info, Format: opts.OutFormat}
 	if opts.OutFormat == ops.FormatJSON {
 		res.DominantColor = DominantColor(img)
 		return res, nil
 	}
-	out, timings, err := Transform(img, o, opts)
+	if o.KeepMetadata {
+		opts.SourceMetadata = src
+	}
+	out, chosen, timings, err := transformResult(img, o, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	res.Data = out
+	res.Format = chosen
 	res.Timings = timings
+	if chosen != opts.OutFormat {
+		res.Info.Format = string(chosen)
+	}
 	return res, nil
 }
 

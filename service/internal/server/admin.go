@@ -232,7 +232,7 @@ func (s *Server) runWarm(id string, plans []warmPlan) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		data, _, err := s.render(ctx, p.target, p.format)
+		data, _, _, err := s.render(ctx, p.target, p.format)
 		cancel()
 		<-s.sem
 		if err != nil {

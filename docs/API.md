@@ -64,7 +64,7 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `h` | height | 1..8192, `auto` | — | |
 | `c` | fit/resize mode | `fit`, `fill`, `force`, `pad`, `crop`, `scale` | `fit` | |
 | `g` | gravity | `center`, `north`, `south`, `east`, `west`, `north_east`, `north_west`, `south_east`, `south_west`, `auto`, `face` | `center` | `auto` = saliency, `face` = deteksi wajah |
-| `f` | format | `auto`, `avif`, `webp`, `jpeg`, `png`, `gif`, `json` | `auto` | `json` mengembalikan metadata, bukan gambar |
+| `f` | format | `auto`, `best`, `avif`, `webp`, `jpeg`, `png`, `gif`, `json` | `auto` | `json` mengembalikan metadata, bukan gambar. `best` (alias `bf`/`best_format`) mengencode JPEG, WebP, dan AVIF lalu menyimpan yang terkecil; biayanya sampai tiga encode per request |
 | `q` | quality | 1..100, `auto` | per-format | `auto` = heuristic berdasarkan ukuran & konten |
 | `dpr` | device pixel ratio | 1, 1.5, 2, 3 | 1 | Mengalikan `w` & `h` |
 | `bg` | background | hex `RRGGBB`/`RRGGBBAA`, `R:G:B` (0..255 per komponen), `transparent` | `transparent` | Warna padding, `extend`, dan `flatten`. Hex 8 digit membawa alpha; `R:G:B` dinormalkan ke hex |
@@ -81,7 +81,7 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `rot` | rotate | `90`, `180`, `270` | — | Rotasi kelipatan 90° |
 | `flip` | flip | `h`, `v`, `hv` | — | |
 | `trim` | trim | `1`..`40` (fuzz) | — | Auto-crop border |
-| `strip` | strip metadata | `0`, `1` | 1 | Default membuang EXIF/GPS; alias `sm` (nama imgproxy). Metadata selalu dibuang, jadi `strip_0`/`sm_0` saat ini sama hasilnya dengan `1` |
+| `strip` | strip metadata | `0`, `1` | 1 | Default membuang EXIF/GPS/ICC; alias `sm` (nama imgproxy). `strip_0`/`sm_0` mempertahankan EXIF/ICC/DPI sumber bila encoder mendukung: JPEG/PNG di build pure Go (post-pass), dan semua format yang disave libvips; AVIF libavif membawa EXIF/ICC. WebP/AVIF pure Go dan format tanpa field density tetap tidak membawa metadata tersebut. `dpi_` tetap ditulis setelah encode |
 | `enlarge` | allow upscale | `0`, `1` | 0 | |
 | `mw` | minimum width | 1..8192 | — | Hasil yang lebih kecil diperbesar (rasio tetap); boleh dipakai tanpa `w`/`h` |
 | `mh` | minimum height | 1..8192 | — | Sama seperti `mw`; `mw`+`mh` memakai faktor terbesar, lalu di-clamp ke 8192 px |
@@ -219,6 +219,19 @@ Aturan:
 2. AVIF hanya jika source bukan animasi dan ukuran output ≤ 4096×4096.
 3. PNG dengan transparansi **tidak** dikonversi ke JPEG kecuali `bg` diberikan.
 4. Respons menyertakan `Vary: Accept` dan `Content-Type` aktual.
+
+### 3.1 Best format (`f_best`)
+
+`f_best` (alias `f_bf`, `f_best_format`) mengencode hasil transformasi ke
+JPEG, WebP, dan AVIF dengan quality yang diminta, lalu mengembalikan byte
+terkecil. Format pemenang dipakai untuk `Content-Type`, `X-IOIMG-Format`, dan
+`ETag`; cache key tetap memakai `f_best`, jadi request yang sama tidak
+bergantung pada urutan encoder. Biayanya sampai **tiga encode** per cache miss
+(plus `mb_`/`q_auto` bila dipakai), jadi pakai untuk endpoint yang memang butuh
+hasil terkecil, bukan untuk semua trafik. Encoder yang tidak tersedia di build
+dilewati; bila hanya satu yang tersisa tidak ada encode tambahan. `f_best`
+tidak boleh digabung dengan `f_` eksplisit lain. `dpi_` tetap didukung dan
+diterapkan ke format pemenang.
 
 ## 4. Signed URL
 

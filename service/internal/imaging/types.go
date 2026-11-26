@@ -30,11 +30,18 @@ type Options struct {
 	// Watermark is the decoded watermark image, resolved by the caller (the
 	// server fetches wmu_/config through its SSRF-guarded fetcher). Nil = none.
 	Watermark image.Image
+	// SourceMetadata is the original encoded source. The pure-Go encoders have
+	// no metadata writer, so sm_0 copies the EXIF/ICC/DPI blocks from here after
+	// encoding. The vips backend keeps them on the image and does not need it.
+	SourceMetadata []byte
 }
 
 // Result is one processed image (or its metadata when f_json is requested).
 type Result struct {
-	Data          []byte
+	Data []byte
+	// Format is the encoded format. It differs from Options.OutFormat only for
+	// f_best, where the encoder keeps the smallest of its candidates.
+	Format        ops.Format
 	Info          Info
 	DominantColor string
 	Timings       map[string]float64

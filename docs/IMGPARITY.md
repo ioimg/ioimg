@@ -124,8 +124,8 @@ Konsekuensinya untuk dokumen ini:
 | Auto WebP/AVIF | ✅ | `f_auto` via `Accept` |
 | Auto JPEG XL | ⛔ | menunggu codec |
 | Auto PNG quantization | 🟡 | `palette_1` manual; belum otomatis |
-| Strip metadata | ✅ | default; `sm_` alias `strip_` (nama imgproxy). Belum ada mode keep-metadata |
-| Keep copyright saat strip | ⛔ | perlu metadata writer |
+| Strip metadata | ✅ | default; `sm_` alias `strip_` (nama imgproxy). `sm_0` mempertahankan EXIF/ICC/DPI sumber bila encoder mendukung (JPEG/PNG pure Go, semua saver libvips, AVIF libavif) |
+| Keep copyright saat strip | 🟡 | `sm_0` mempertahankan blok metadata sumber, termasuk copyright, pada encoder yang mendukung; belum ada opsi keep-copyright-saja saat `sm_1` |
 | Strip ICC / konversi sRGB | ✅ | encoder Go/vips membuang profil |
 | Advanced JPEG (mozjpeg) | ⛔ | butuh encoder mozjpeg/libvips (Pro di imgproxy) |
 | Advanced WebP options | ✅ | `webpo_compression` (method 0..6) di kedua backend; `smart_subsample`/`preset` belum |
@@ -144,7 +144,7 @@ Konsekuensinya untuk dokumen ini:
 | Autoquality by file size | ✅ | `mb_<bytes>`: binary search `q` 20..q0, maks 5 probe, deterministik; tidak pernah gagal (kembalikan terkecil) |
 | Autoquality by DSSIM | ⛔ | butuh metrik DSSIM |
 | DPI metadata | ✅ | `dpi_<n>`: JFIF density (JPEG) / `pHYs` (PNG), Pro di imgproxy |
-| Automatic best format | 🟡 | `f_auto` memilih berdasarkan `Accept`, bukan rasio kompresi |
+| Automatic best format | ✅ | `f_best` (alias `f_bf`/`f_best_format`) mengencode JPEG/WebP/AVIF dan menyimpan yang terkecil; `f_auto` tetap negosiasi `Accept` |
 
 ### 2.5 Keamanan
 

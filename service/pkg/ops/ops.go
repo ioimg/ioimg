@@ -20,6 +20,10 @@ type Format string
 
 const (
 	FormatAuto Format = "auto"
+	// FormatBest asks the encoder to try the lossy web formats and keep the
+	// smallest result (imgproxy f_best). The winner is reported by the imaging
+	// pipeline because only it knows the encoded sizes.
+	FormatBest Format = "best"
 	FormatAVIF Format = "avif"
 	FormatWebP Format = "webp"
 	FormatJPEG Format = "jpeg"
@@ -112,9 +116,12 @@ type Ops struct {
 	Flip       string // "", "h", "v", "hv"
 	Trim       int
 	Strip      *bool // nil = default (true)
-	Enlarge    bool
-	Palette    bool
-	Preset     string
+	// KeepMetadata is set by sm_0/strip_0 and asks the encoder to retain the
+	// source EXIF/ICC/DPI metadata when it supports carrying it.
+	KeepMetadata bool
+	Enlarge      bool
+	Palette      bool
+	Preset       string
 	// Algorithm selects the resampling kernel. Empty means lanczos3 and keeps
 	// the canonical form (and therefore the cache key) of existing URLs.
 	Algorithm Algorithm
@@ -399,6 +406,9 @@ func (o *Ops) set(key, value string) error {
 		if !ok {
 			return fmt.Errorf("f: unknown format %q", value)
 		}
+		if (o.Format == FormatBest && f != FormatBest) || (f == FormatBest && o.Format != FormatAuto && o.Format != FormatBest) {
+			return fmt.Errorf("f: best format cannot be combined with an explicit format")
+		}
 		o.Format = f
 	case "q":
 		if value == "auto" {
@@ -621,9 +631,11 @@ func (o *Ops) set(key, value string) error {
 		case "0":
 			v := false
 			o.Strip = &v
+			o.KeepMetadata = true
 		case "1":
 			v := true
 			o.Strip = &v
+			o.KeepMetadata = false
 		default:
 			return fmt.Errorf("strip must be 0 or 1")
 		}
@@ -894,11 +906,23 @@ func parseDim(v string) (int, error) {
 }
 
 func parseFormat(v string) (Format, bool) {
-	switch Format(v) {
-	case FormatAuto, FormatAVIF, FormatWebP, FormatJPEG, FormatPNG, FormatGIF, FormatJSON:
-		return Format(v), true
-	case "jpg":
+	switch strings.ToLower(v) {
+	case "auto":
+		return FormatAuto, true
+	case "best", "bf", "best_format":
+		return FormatBest, true
+	case "avif":
+		return FormatAVIF, true
+	case "webp":
+		return FormatWebP, true
+	case "jpeg", "jpg":
 		return FormatJPEG, true
+	case "png":
+		return FormatPNG, true
+	case "gif":
+		return FormatGIF, true
+	case "json":
+		return FormatJSON, true
 	}
 	return "", false
 }
@@ -1157,10 +1181,10 @@ func (o Ops) Canonical() string {
 	if o.Sharpen != 0 {
 		add("sharp", trimFloat(o.Sharpen))
 	}
-	if o.Strip == nil || *o.Strip {
-		add("strip", "1")
-	} else {
+	if o.KeepMetadata || (o.Strip != nil && !*o.Strip) {
 		add("strip", "0")
+	} else {
+		add("strip", "1")
 	}
 	if o.Trim != 0 {
 		add("trim", strconv.Itoa(o.Trim))

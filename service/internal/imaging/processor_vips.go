@@ -109,7 +109,7 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 		return Result{}, ErrDimension
 	}
 	timings := map[string]float64{"decode": elapsed(start)}
-	res := Result{Info: info}
+	res := Result{Info: info, Format: opts.OutFormat}
 
 	if opts.OutFormat == ops.FormatJSON {
 		res.DominantColor = dominantColor(img)
@@ -138,12 +138,16 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 	}
 
 	start = time.Now()
-	out, err := encode(img, o, opts)
+	out, chosen, err := encode(img, o, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	timings["encode"] = elapsed(start)
 	res.Data = out
+	res.Format = chosen
+	if chosen != opts.OutFormat {
+		res.Info.Format = string(chosen)
+	}
 	res.Timings = timings
 	return res, nil
 }
@@ -194,7 +198,7 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 		return Result{}, err
 	}
 	info.Width, info.Height = img.Width(), img.Height()
-	res := Result{Info: info}
+	res := Result{Info: info, Format: opts.OutFormat}
 	timings := map[string]float64{"transform": elapsed(start)}
 
 	if opts.OutFormat == ops.FormatJPEG && img.HasAlpha() {
@@ -205,12 +209,16 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	}
 
 	start = time.Now()
-	out, err := encode(img, o, opts)
+	out, chosen, err := encode(img, o, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	timings["encode"] = elapsed(start)
 	res.Data = out
+	res.Format = chosen
+	if chosen != opts.OutFormat {
+		res.Info.Format = string(chosen)
+	}
 	res.Timings = timings
 	return res, nil
 }
@@ -770,13 +778,126 @@ func geometry(img *vips.ImageRef, o ops.Ops) error {
 	return nil
 }
 
-func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
+func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, ops.Format, error) {
+	if opts.OutFormat == ops.FormatBest {
+		return encodeBest(img, o, opts)
+	}
+	out, err := encodeSingle(img, o, opts, opts.OutFormat)
+	return out, opts.OutFormat, err
+}
+
+// encodeBest tries JPEG, WebP and AVIF with one transform and keeps the
+// smallest result. Candidates whose encoder is not linked are skipped; when
+// only one remains it is encoded once, with no extra export.
+func encodeBest(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, ops.Format, error) {
+	candidates := make([]ops.Format, 0, 3)
+	for _, f := range []ops.Format{ops.FormatJPEG, ops.FormatWebP, ops.FormatAVIF} {
+		if vipsTypeSupported(f) {
+			candidates = append(candidates, f)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, "", fmt.Errorf("unsupported_format: %s", opts.OutFormat)
+	}
+	if len(candidates) > 1 {
+		// A buffer-backed vips image is streamed sequentially, so exporting it
+		// once would consume the source for the remaining candidates. Copy the
+		// pixels into memory once, keeping the metadata blobs sm_0 promises.
+		exif := img.GetBlob("exif-data")
+		icc := img.GetBlob("icc-profile-data")
+		xres, yres := img.GetDouble("xres"), img.GetDouble("yres")
+		pixels, err := img.ToGoImage()
+		if err != nil {
+			return nil, "", err
+		}
+		mem, err := vips.NewImageFromGoImage(pixels)
+		if err != nil {
+			return nil, "", err
+		}
+		if o.KeepMetadata {
+			if len(exif) > 0 {
+				mem.SetBlob("exif-data", exif)
+			}
+			if len(icc) > 0 {
+				mem.SetBlob("icc-profile-data", icc)
+			}
+			if xres > 0 {
+				mem.SetDouble("xres", xres)
+			}
+			if yres > 0 {
+				mem.SetDouble("yres", yres)
+			}
+		}
+		defer mem.Close()
+		img = mem
+	}
+	var best []byte
+	var bestFormat ops.Format
+	var firstErr error
+	for _, format := range candidates {
+		target := img
+		closeTarget := false
+		if format == ops.FormatJPEG && img.HasAlpha() {
+			clone, err := img.Copy()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			flat, ferr := flattenVips(clone, backgroundForJPEG(o))
+			if ferr != nil {
+				clone.Close()
+				if firstErr == nil {
+					firstErr = ferr
+				}
+				continue
+			}
+			target, closeTarget = flat, true
+		}
+		out, err := encodeSingle(target, o, opts, format)
+		if closeTarget {
+			target.Close()
+		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if best == nil || len(out) < len(best) {
+			best, bestFormat = out, format
+		}
+	}
+	if best == nil {
+		return nil, "", firstErr
+	}
+	return best, bestFormat, nil
+}
+
+func vipsTypeSupported(f ops.Format) bool {
+	switch f {
+	case ops.FormatJPEG:
+		return vips.IsTypeSupported(vips.ImageTypeJPEG)
+	case ops.FormatPNG:
+		return vips.IsTypeSupported(vips.ImageTypePNG)
+	case ops.FormatWebP:
+		return vips.IsTypeSupported(vips.ImageTypeWEBP)
+	case ops.FormatAVIF:
+		return vips.IsTypeSupported(vips.ImageTypeAVIF)
+	case ops.FormatGIF:
+		return vips.IsTypeSupported(vips.ImageTypeGIF)
+	}
+	return true
+}
+
+func encodeSingle(img *vips.ImageRef, o ops.Ops, opts Options, outFormat ops.Format) ([]byte, error) {
 	quality := opts.Quality
 	if quality == 0 {
-		quality = autoQuality(opts.OutFormat, img.Width(), img.Height())
+		quality = autoQuality(outFormat, img.Width(), img.Height())
 	}
 	format := vips.ImageTypeJPEG
-	switch opts.OutFormat {
+	switch outFormat {
 	case ops.FormatPNG:
 		format = vips.ImageTypePNG
 	case ops.FormatWebP:
@@ -787,13 +908,13 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 		format = vips.ImageTypeGIF
 	}
 	if !vips.IsTypeSupported(format) {
-		return nil, fmt.Errorf("unsupported_format: %s", opts.OutFormat)
+		return nil, fmt.Errorf("unsupported_format: %s", outFormat)
 	}
 	out, err := exportAt(img, format, quality, o)
 	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", opts.OutFormat, err)
+		return nil, fmt.Errorf("encode %s: %w", outFormat, err)
 	}
-	if o.MaxBytes <= 0 || !lossy(opts.OutFormat) || len(out) <= o.MaxBytes {
+	if o.MaxBytes <= 0 || !lossy(outFormat) || len(out) <= o.MaxBytes {
 		return out, nil
 	}
 	return fitBytesVips(img, format, o, o.MaxBytes, quality, out)
@@ -847,7 +968,7 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 		Quality:       quality,
 		Compression:   6,
 		Interlaced:    false,
-		StripMetadata: true,
+		StripMetadata: !o.KeepMetadata,
 		Effort:        4,
 		Speed:         8,
 	}
@@ -864,7 +985,7 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 	var out []byte
 	if format == vips.ImageTypeAVIF {
 		if avifUsesLibavif() {
-			out, err := encodeAVIFLibavif(img, quality)
+			out, err := encodeAVIFLibavif(img, quality, o.KeepMetadata)
 			if err != nil {
 				return nil, err
 			}
@@ -875,7 +996,7 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 		out, _, err := img.ExportAvif(&vips.AvifExportParams{
 			Quality:       quality,
 			Effort:        avifEffortLevel(),
-			StripMetadata: true,
+			StripMetadata: !o.KeepMetadata,
 			Bitdepth:      8,
 		})
 		if err != nil {
