@@ -498,7 +498,11 @@ func applyColorEffectsVips(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error
 	if o.Colorize.Opacity <= 0 && o.Duotone.Intensity <= 0 && o.Gradient.IsZero() {
 		return img, nil
 	}
-	goImg, err := img.ToImage(&vips.ExportParams{})
+	// ToGoImage reads raw pixels straight out of libvips. ToImage (deprecated)
+	// encodes the image and decodes it again in Go, which cost ~3 ms per
+	// request on a 400 px result and returned YCbCr, forcing another full
+	// conversion in nrgbaOf.
+	goImg, err := img.ToGoImage()
 	if err != nil {
 		return nil, fmt.Errorf("decode for colour effects: %w", err)
 	}

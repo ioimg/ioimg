@@ -257,3 +257,37 @@ Yang dikonfirmasi lewat binary:
 Catatan metodologi: `w_800` pada jalur cepat dan lambat sama-sama ~23,7 ms, jadi
 perbandingan ini bukan bukti bahwa jalur cepat dipakai untuk `w_800` — yang
 membuktikannya `w_400` (1,55×) dan `c_fill` (yang sebelumnya 1,5× lebih lambat).
+
+## 11. Efek warna: akar masalahnya `ToImage`, bukan operasi piksel (2026-11-26)
+
+Dugaan di §10 ("jalankan efek di domain vips") ternyata bukan perbaikan yang
+paling murah. Penyebab sebenarnya ada di satu baris: `img.ToImage()`.
+
+`ToImage` **deprecated** di govips dan implementasinya `ExportNative()` (encode
+ke JPEG/PNG) lalu `image.Decode()` di Go. Jadi setiap request ber-efek membayar
+encode + decode penuh sebelum efeknya sendiri dijalankan — dan karena hasilnya
+`*image.YCbCr`, `nrgbaOf()` mengonversi seluruh gambar ke NRGBA lewat loop Go.
+Diganti dengan `img.ToGoImage()`, yang memanggil `vips_image_write_to_memory`
+langsung dan mengembalikan NRGBA sRGB tanpa encode/decode. Operasi piksel tidak
+berubah, jadi hasilnya byte-identik dengan jalur pure-Go (test vips tetap lulus,
+termasuk nilai piksel `dt`).
+
+Diukur pada **binary `-tags vips` yang di-build**, HTTP MISS, 1 keep-alive,
+`?i={i}`, 8 s/titik:
+
+| Opsi | sebelum | sesudah | selisih vs `w_400` |
+| --- | --- | --- | --- |
+| `w_400` | 15,7 ms | **16,1 ms** | — |
+| `w_400 + dt_0.5` | 23,5 ms | **17,5 ms** | +1,4 ms (dulu +7,8) |
+| `w_400 + col_0.5` | 22,7 ms | **17,5 ms** | +1,5 ms (dulu +7,0) |
+| `w_400 + gr_0.5` | 24,6 ms | **18,3 ms** | +2,2 ms (dulu +8,9) |
+
+Biaya efek turun ~5×. Sisa +1,4–2,2 ms adalah dua salinan memori yang memang
+diperlukan (vips → Go untuk loop piksel, lalu Go → vips), bukan konversi ruang
+warna. Menghilangkan sisanya berarti menulis duotone/colorize sebagai operasi
+vips native (`maplut` + LUT 256 entri, `composite` untuk colorize/gradient),
+yang **belum dilakukan** karena hasilnya sudah dalam kisaran noise untuk
+kebanyakan beban.
+
+Regresi HIT: 77,3k rps (p50 85 µs, p99 347 µs) pada binary yang sama — di dalam
+rentang acuan 75–79k, jadi tidak ada regresi dari perubahan ini.
