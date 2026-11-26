@@ -94,6 +94,8 @@ func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
 		ExpiryRequired bool              `json:"expiryRequired"`
 		Presets        map[string]string `json:"presets"`
 		Concurrency    int               `json:"concurrency"`
+		RateRPS        float64           `json:"rateRps"`
+		RateBurst      int               `json:"rateBurst"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -110,7 +112,11 @@ func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
 		ExpiryRequired: in.ExpiryRequired,
 		Presets:        in.Presets,
 		SigningKeys:    []tenant.SigningKey{{Kid: kid, Secret: secret}},
-		Limits:         tenant.Limits{Concurrency: in.Concurrency},
+		Limits: tenant.Limits{
+			Concurrency: in.Concurrency,
+			RateRPS:     in.RateRPS,
+			RateBurst:   in.RateBurst,
+		},
 	}
 	f.mu.Lock()
 	f.projects[in.ID] = p
@@ -423,5 +429,84 @@ func TestProjectConcurrencyLimit(t *testing.T) {
 
 	if !bytes.Contains([]byte(plane.metrics.Render(0, 0)), []byte("ioimg_concurrency_rejected_total 1")) {
 		t.Fatalf("rejection not counted:\n%s", plane.metrics.Render(0, 0))
+	}
+}
+
+// TestProjectRateLimit pins the per-project token bucket contract: the default
+// is unlimited, a limited project gets a 429 with retry headers, another project
+// is untouched, and operational endpoints never enter the project limiter.
+func TestProjectRateLimit(t *testing.T) {
+	f := newFakeControl(t)
+	f.createProject(t, map[string]any{
+		"id": "limited", "name": "Limited", "allowAnyHost": true,
+		"rateRps": 1, "rateBurst": 1,
+	})
+	f.createProject(t, map[string]any{
+		"id": "free", "name": "Free", "allowAnyHost": true,
+	})
+	plane := newControlDataPlane(t, f.srv.URL)
+	source := f.origin.URL + "/photo.jpg"
+	path := "/w_40,f_jpeg/" + source
+
+	// The first request spends the only token and is a normal, counted transform.
+	resp := f.request(t, plane, "limited", path)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first limited request: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	used := plane.usage.totalFor("limited")
+	if used != 1 {
+		t.Fatalf("want one counted transform, got %d", used)
+	}
+
+	// The second is rejected before cache/gate/fetch and must not count usage.
+	resp = f.request(t, plane, "limited", path+"?r=2")
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("want Retry-After 1, got %q", got)
+	}
+	if got := resp.Header.Get("X-IOIMG-RateLimit-Limit"); got != "1" {
+		t.Fatalf("want limit 1, got %q", got)
+	}
+	if got := resp.Header.Get("X-IOIMG-RateLimit-Remaining"); got != "0" {
+		t.Fatalf("want remaining 0, got %q", got)
+	}
+	if got := resp.Header.Get("X-IOIMG-RateLimit-Reset"); got != "1" {
+		t.Fatalf("want reset 1, got %q", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !bytes.Contains(body, []byte("rate_limited")) {
+		t.Fatalf("want rate_limited body, got %s", body)
+	}
+	if got := plane.usage.totalFor("limited"); got != used {
+		t.Fatalf("rate rejection consumed quota: %d -> %d", used, got)
+	}
+
+	// A different project has its own bucket and stays unlimited by default.
+	for i := 0; i < 3; i++ {
+		resp = f.request(t, plane, "free", path+fmt.Sprintf("?free=%d", i))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("free request %d: %d", i, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// Operational endpoints are routed before handleImage and are never limited.
+	for i := 0; i < 3; i++ {
+		for _, op := range []string{"/healthz", "/readyz", "/metrics", "/v1/stats"} {
+			resp = f.request(t, plane, "limited", op)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("%s request %d: %d", op, i, resp.StatusCode)
+			}
+			resp.Body.Close()
+		}
+	}
+
+	metrics := plane.metrics.Render(0, 0)
+	if !bytes.Contains([]byte(metrics), []byte(`ioimg_project_rate_limited_total{project="limited"} 1`)) {
+		t.Fatalf("rate rejection not counted:\n%s", metrics)
 	}
 }

@@ -10,8 +10,10 @@ import (
 
 // Limits are the soft quotas a project may enforce.
 type Limits struct {
-	MonthlyTransforms int64 `json:"monthlyTransforms"`
-	Concurrency       int   `json:"concurrency"`
+	MonthlyTransforms int64   `json:"monthlyTransforms"`
+	Concurrency       int     `json:"concurrency"`
+	RateRPS           float64 `json:"rateRps"`
+	RateBurst         int     `json:"rateBurst"`
 }
 
 // Usage is the control plane's monthly counter snapshot.
@@ -65,6 +67,8 @@ type Policy struct {
 	SourceCipher     *sign.SourceCipher
 	MonthlyLimit     int64
 	Concurrency      int
+	RateRPS          float64
+	RateBurst        int
 	Usage            Usage
 }
 
@@ -82,6 +86,8 @@ func NewPolicy(p Project) *Policy {
 		Presets:          p.Presets,
 		MonthlyLimit:     p.Limits.MonthlyTransforms,
 		Concurrency:      p.Limits.Concurrency,
+		RateRPS:          p.Limits.RateRPS,
+		RateBurst:        p.Limits.RateBurst,
 		Usage:            p.Usage,
 	}
 	if pol.Presets == nil {

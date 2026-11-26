@@ -31,17 +31,18 @@ import (
 
 // Server is the ioimg data plane.
 type Server struct {
-	cfg     config.Config
-	fetcher *source.Fetcher
-	cache   *cache.Disk
-	metrics *Metrics
-	log     *slog.Logger
-	sf      singleflight.Group
-	sem     chan struct{}
-	gate    *projectGate
-	limit   *limiter
-	version string
-	started time.Time
+	cfg          config.Config
+	fetcher      *source.Fetcher
+	cache        *cache.Disk
+	metrics      *Metrics
+	log          *slog.Logger
+	sf           singleflight.Group
+	sem          chan struct{}
+	gate         *projectGate
+	limit        *limiter
+	projectLimit *projectLimiter
+	version      string
+	started      time.Time
 
 	formats map[ops.Format]bool
 	proc    imaging.Processor
@@ -113,17 +114,18 @@ func New(cfg config.Config, o Options) (*Server, error) {
 		version = "0.1.0-dev"
 	}
 	s := &Server{
-		cfg:     cfg,
-		fetcher: fetcher,
-		cache:   disk,
-		metrics: m,
-		log:     logger,
-		sem:     make(chan struct{}, conc),
-		gate:    newProjectGate(),
-		version: version,
-		started: time.Now(),
-		formats: imaging.AvailableFormats(),
-		proc:    imaging.DefaultProcessor(),
+		cfg:          cfg,
+		fetcher:      fetcher,
+		cache:        disk,
+		metrics:      m,
+		log:          logger,
+		sem:          make(chan struct{}, conc),
+		gate:         newProjectGate(),
+		projectLimit: newProjectLimiter(),
+		version:      version,
+		started:      time.Now(),
+		formats:      imaging.AvailableFormats(),
+		proc:         imaging.DefaultProcessor(),
 	}
 	s.l2 = o.L2
 	if s.l2 == nil && cfg.L2Enabled {
@@ -304,6 +306,24 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	if perr != nil {
 		s.writeError(w, r, perr)
 		return
+	}
+	// The project rate limit is admission control, not work: it must run before
+	// the concurrency gate, any cache probe, and any origin fetch. Unlimited
+	// projects take the first branch and never allocate a bucket.
+	if decision := s.projectLimit.allow(policy.ID, policy.RateRPS, policy.RateBurst); !decision.Allowed {
+		s.metrics.RecordProjectRateLimited(policy.ID)
+		h := w.Header()
+		h.Set("Retry-After", strconv.Itoa(ceilSeconds(decision.RetryAfter)))
+		h.Set("X-IOIMG-RateLimit-Limit", strconv.Itoa(decision.Limit))
+		h.Set("X-IOIMG-RateLimit-Remaining", strconv.Itoa(decision.Remaining))
+		h.Set("X-IOIMG-RateLimit-Reset", strconv.Itoa(ceilSeconds(decision.Reset)))
+		s.writeError(w, r, errRateLimited())
+		return
+	} else if decision.Limit > 0 {
+		h := w.Header()
+		h.Set("X-IOIMG-RateLimit-Limit", strconv.Itoa(decision.Limit))
+		h.Set("X-IOIMG-RateLimit-Remaining", strconv.Itoa(decision.Remaining))
+		h.Set("X-IOIMG-RateLimit-Reset", strconv.Itoa(ceilSeconds(decision.Reset)))
 	}
 	target, err := parseTarget(r, policy)
 	if err != nil {
@@ -772,7 +792,8 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, he *HTTPErro
 	s.log.Warn("request failed", "code", he.Code, "status", he.Status, "path", r.URL.Path, "request_id", r.Header.Get("X-Request-Id"))
 
 	// Optional browser fallback: redirect to the original source.
-	if he.Status >= 400 && strings.HasPrefix(r.Header.Get("Accept"), "image/") {
+	if he.Status >= 400 && he.Code != "rate_limited" &&
+		strings.HasPrefix(r.Header.Get("Accept"), "image/") {
 		policy, _ := s.policyFor(r)
 		if policy != nil && policy.FallbackRedirect {
 			target, err := parseTarget(r, policy)
@@ -786,7 +807,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, he *HTTPErro
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if he.Retryable {
+	if he.Retryable && w.Header().Get("Retry-After") == "" {
 		w.Header().Set("Retry-After", "1")
 	}
 	w.WriteHeader(he.Status)

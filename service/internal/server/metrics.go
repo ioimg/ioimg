@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,10 +31,15 @@ type Metrics struct {
 
 	errorMu sync.Mutex
 	byCode  map[string]uint64
+
+	rateMu     sync.Mutex
+	rateByProj map[string]uint64
 }
 
 // NewMetrics returns initialised metrics.
-func NewMetrics() *Metrics { return &Metrics{byCode: map[string]uint64{}} }
+func NewMetrics() *Metrics {
+	return &Metrics{byCode: map[string]uint64{}, rateByProj: map[string]uint64{}}
+}
 
 // RecordError increments the total and the per-code counter.
 func (m *Metrics) RecordError(code string) {
@@ -41,6 +47,16 @@ func (m *Metrics) RecordError(code string) {
 	m.errorMu.Lock()
 	m.byCode[code]++
 	m.errorMu.Unlock()
+}
+
+// RecordProjectRateLimited counts a request rejected by a project's rate limit.
+func (m *Metrics) RecordProjectRateLimited(projectID string) {
+	m.rateMu.Lock()
+	if m.rateByProj == nil {
+		m.rateByProj = map[string]uint64{}
+	}
+	m.rateByProj[projectID]++
+	m.rateMu.Unlock()
 }
 
 // Render writes the Prometheus text exposition.
@@ -70,6 +86,18 @@ func (m *Metrics) Render(cacheEntries int, cacheBytes int64) string {
 		fmt.Fprintf(&b, "ioimg_errors_by_code_total{code=%q} %d\n", code, n)
 	}
 	m.errorMu.Unlock()
+
+	m.rateMu.Lock()
+	fmt.Fprintf(&b, "# HELP ioimg_project_rate_limited_total Requests rejected by a project rate limit.\n# TYPE ioimg_project_rate_limited_total counter\n")
+	projects := make([]string, 0, len(m.rateByProj))
+	for project := range m.rateByProj {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+	for _, project := range projects {
+		fmt.Fprintf(&b, "ioimg_project_rate_limited_total{project=%q} %d\n", project, m.rateByProj[project])
+	}
+	m.rateMu.Unlock()
 	return b.String()
 }
 
