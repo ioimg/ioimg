@@ -217,3 +217,43 @@ menjelaskan +7 ms: pada gambar hasil resize 400 px, satu lintasan piksel hanya
 sepersekot dari itu. Biaya sebenarnya belum teridentifikasi — kandidat berikutnya
 adalah `ToImage`/`ExportParams{}` dan interprestasi band alpha. Profil CPU
 diperlukan sebelum ada klaim lebih jauh.
+
+## 10. Diukur lewat binary hasil build (HTTP), bukan `go test`
+
+Angka in-process (§8/§9) berguna untuk membandingkan jalur kode, tapi bukan
+angka yang dikirim ke pengguna: `go test` tidak melewati HTTP, fetch origin,
+penulisan cache, atau alokasi per-request. Semua di bawah ini diukur pada
+**binary `-tags vips` yang di-build**, 1 koneksi keep-alive, `?i={i}` unik supaya
+selalu MISS, cache di ext4, origin `python3 -m http.server` di host yang sama,
+8 s per titik. `ms/img` = total wall per request (fetch + decode + resize +
+encode + tulis cache).
+
+| Opsi | jalur cepat | `IOIMG_VIPS_THUMBNAIL=0` | rasio |
+| --- | --- | --- | --- |
+| `w_400` | **15,7 ms** (64 img/s) | 24,3 ms (41 img/s) | **1,55×** |
+| `w_400,h_400,c_fill` | **16,8 ms** | 25,9 ms | 1,54× |
+| `w_800` | 23,7 ms | 23,7 ms | 1,00× |
+| `w_800,c_fill` | 23,5 ms | 23,7 ms | 1,01× |
+| `w_400 + dt_` | 23,5 ms | 32,7 ms | 1,39× |
+| `w_400 + col_` | 22,7 ms | 33,5 ms | 1,48× |
+| `w_400 + gr_` | 24,6 ms | 34,2 ms | 1,39× |
+
+Yang dikonfirmasi lewat binary:
+
+1. **`c_fill` satu sisi sudah setara `w_800` biasa** (23,5 vs 23,7 ms) — dulu
+   21,6 vs 14,0 ms karena jatuh ke decode penuh. Perbaikan `thumbnailPlan`
+   terverifikasi di jalur produksi, bukan hanya di unit test.
+2. **Shrink-on-load = 1,55× end-to-end** pada `w_400`. Pada `w_800` manfaatnya
+   hilang (DCT hanya bisa 1/2) — sesuai §8.
+3. **Efek warna tetap +7 ms** pada `w_400` (23,5 vs 15,7). Penyebabnya sekarang
+   teridentifikasi: `applyColorEffectsVips` memanggil `img.ToImage()`, yang untuk
+   JPEG tanpa alpha mengembalikan `*image.YCbCr`, lalu `nrgbaOf()` mengonversi
+   seluruh gambar ke NRGBA lewat loop Go (plus alokasi) sebelum efek dijalankan
+   dan dikembalikan ke vips. Itu ~3 ms untuk `ToImage` + ~4 ms konversi.
+   Perbaikan berikutnya: jalankan efek langsung di domain vips (maplut/LUT untuk
+   duotone, composite untuk colorize/gradient) sehingga tidak ada konversi
+   ruang warna sama sekali.
+
+Catatan metodologi: `w_800` pada jalur cepat dan lambat sama-sama ~23,7 ms, jadi
+perbandingan ini bukan bukti bahwa jalur cepat dipakai untuk `w_800` — yang
+membuktikannya `w_400` (1,55×) dan `c_fill` (yang sebelumnya 1,5× lebih lambat).
