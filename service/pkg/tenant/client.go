@@ -60,12 +60,64 @@ func (c *Client) FetchSnapshot(ctx context.Context, since int64) (snap *Snapshot
 	return &out, false, nil
 }
 
-// UsageReport is one project's counters since the last report.
+// UsageReport is one project's counters since the last report. LeaseID is the
+// reservation the transforms were spent from; empty keeps old payloads valid.
 type UsageReport struct {
 	ProjectID  string `json:"projectId"`
 	Transforms int64  `json:"transforms"`
 	BytesIn    int64  `json:"bytesIn"`
 	BytesOut   int64  `json:"bytesOut"`
+	LeaseID    string `json:"leaseId,omitempty"`
+}
+
+// QuotaLease is a reservation of monthly transform quota for this replica.
+type QuotaLease struct {
+	LeaseID   string    `json:"leaseId"`
+	Amount    int64     `json:"amount"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// leaseTimeout bounds the refresh call. A slow control plane must never hold a
+// request; the caller runs this off the request path and falls back to the
+// current lease/snapshot budget when it fails.
+const leaseTimeout = 2 * time.Second
+
+// LeaseQuota asks the control plane to reserve want transforms for a replica.
+// There is no retry here: the existing periodic usage/report policy handles
+// failures without turning a quota blip into a request storm.
+func (c *Client) LeaseQuota(
+	ctx context.Context,
+	projectID, replicaID string,
+	want int64,
+) (*QuotaLease, error) {
+	body, _ := json.Marshal(map[string]any{
+		"projectId": projectID,
+		"replicaId": replicaID,
+		"want":      want,
+	})
+	ctx, cancel := context.WithTimeout(ctx, leaseTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/v1/quota/lease", bytesReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("quota lease %d: %s", resp.StatusCode, string(raw))
+	}
+	var out QuotaLease
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode quota lease: %w", err)
+	}
+	return &out, nil
 }
 
 // ReportUsage sends a batch of counters.

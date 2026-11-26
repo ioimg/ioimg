@@ -166,6 +166,9 @@ ingress: { enabled: true, host: img.example.com }
 | `ioimg_transform_errors_total` | counter | `code` | Health codec |
 | `ioimg_origin_requests_total` | counter | `status_class` | Health origin |
 | `ioimg_quota_used` | gauge | `metric` (transforms/egress) | Billing |
+| `ioimg_quota_lease_grants_total` | counter | — | Lease reservations granted by the control plane |
+| `ioimg_quota_lease_denied_total` | counter | — | Lease requests denied (no quota) or failed |
+| `ioimg_quota_lease_spent_total` | counter | — | Transforms spent from a lease |
 | `ioimg_singleflight_waiters` | gauge | — | Coalescing efektif? |
 
 **Cardinality rule:** jangan pernah memakai URL/host/project sebagai label metric (kecuali `project` di endpoint admin terpisah). Gunakan log/trace untuk dimensi itu.
@@ -184,6 +187,27 @@ Contoh:
 ```json
 {"ts":"2025-11-20T10:00:00.123Z","level":"INFO","msg":"transform","request_id":"01HQ8Y","project":"acme","status":200,"cache":"MISS","duration_ms":87,"ops":"w_800,f_auto,q_auto","backend":"uring"}
 ```
+
+### 4.4 Quota leases and fail-closed behaviour
+
+Each replica reserves monthly transform quota from the control plane before it
+spends it. The replica id comes from `IOIMG_REPLICA_ID`; without it the process
+uses `<hostname>-<pid>`, which stays stable for that process lifetime.
+
+- A replica refreshes asynchronously when its unspent lease drops below 10% of
+  the last grant. The request path never waits for the control plane.
+- Every usage report carries the `leaseId` it spent from, and the control plane
+  clamps a lease's `used` counter at its `amount` even if a report is late or
+  corrupted.
+- A lease lasts five minutes. Expired leases stop counting at once
+  (`expires_at > now()`), so no cleanup job is needed.
+- **Fail-closed:** if the control plane is unreachable, a replica may spend only
+  the lease budget and snapshot/local quota it already holds. When that is gone
+  it returns `429 quota_exceeded`; it does not fail open.
+- **Overshoot bound:** outstanding leases are the only source of overshoot. In
+  the worst case the aggregate can exceed the plan limit by the sum of all
+  unexpired outstanding lease amounts. The control plane subtracts those leases
+  when granting new ones, which keeps the bound finite and observable.
 
 ## 5. SLO & alert
 

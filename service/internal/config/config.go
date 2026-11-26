@@ -70,6 +70,7 @@ type Config struct {
 	ControlTimeout     time.Duration
 	AllowProjectHeader bool
 	ProjectHeader      string
+	ReplicaID          string
 
 	DisableAVIF bool
 	DisableWebP bool
@@ -254,6 +255,7 @@ func Load() (Config, error) {
 	c.ControlTimeout = envDuration("IOIMG_CONTROL_TIMEOUT", 5*time.Second)
 	c.AllowProjectHeader = envBool("IOIMG_ALLOW_PROJECT_HEADER", false)
 	c.ProjectHeader = env("IOIMG_PROJECT_HEADER", "X-IOIMG-Project")
+	c.ReplicaID = strings.TrimSpace(os.Getenv("IOIMG_REPLICA_ID"))
 	if c.ControlURL != "" {
 		if c.ControlToken == "" {
 			return c, fmt.Errorf("IOIMG_CONTROL_URL requires IOIMG_CONTROL_TOKEN")

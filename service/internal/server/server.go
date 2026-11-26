@@ -56,7 +56,9 @@ type Server struct {
 	control            *tenant.Client
 	projectHeader      string
 	allowProjectHeader bool
+	replicaID          string
 	usage              *usage
+	leases             *leaseBudget
 	watermarks         *watermarkCache
 }
 
@@ -152,8 +154,13 @@ func New(cfg config.Config, o Options) (*Server, error) {
 	}
 	s.jobs = newJobStore(100)
 	s.usage = newUsage()
+	s.leases = newLeaseBudget()
 	s.watermarks = &watermarkCache{}
 	s.projectHeader = cfg.ProjectHeader
+	s.replicaID = cfg.ReplicaID
+	if s.replicaID == "" {
+		s.replicaID = defaultReplicaID()
+	}
 	s.allowProjectHeader = cfg.AllowProjectHeader
 	s.defaultPolicy = buildDefaultPolicy(cfg)
 	s.tenants = tenant.NewStore(s.defaultPolicy)
@@ -330,13 +337,19 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, asHTTPError(err))
 		return
 	}
-	if remaining := s.quotaRemaining(policy); remaining >= 0 {
-		w.Header().Set("X-IOIMG-Quota-Remaining", strconv.FormatInt(remaining, 10))
-		if remaining == 0 {
-			s.writeError(w, r, errQuotaExceeded())
-			return
+	reservation := s.acquireQuota(policy)
+	if !reservation.allowed {
+		if reservation.remaining >= 0 {
+			w.Header().Set("X-IOIMG-Quota-Remaining", "0")
 		}
+		s.writeError(w, r, errQuotaExceeded())
+		return
 	}
+	if reservation.remaining >= 0 {
+		w.Header().Set("X-IOIMG-Quota-Remaining", strconv.FormatInt(reservation.remaining, 10))
+	}
+	defer reservation.release()
+	s.maybeRefreshLease(policy, reservation)
 
 	format := target.Ops.Format
 	if (format == ops.FormatAVIF && s.cfg.DisableAVIF) || (format == ops.FormatWebP && s.cfg.DisableWebP) {
@@ -471,7 +484,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.metrics.Coalesced.Add(1)
 	}
 	if !res.hit {
-		s.countUsage(policy.ID, int64(len(res.data)))
+		s.countUsageLease(policy.ID, reservation.spend(), int64(len(res.data)))
 		s.metrics.Misses.Add(1)
 	}
 	s.metrics.BytesOut.Add(uint64(len(res.data)))
@@ -957,6 +970,16 @@ func envFloat(k string, d float64) float64 {
 		}
 	}
 	return d
+}
+
+// defaultReplicaID is stable for the lifetime of the process and distinct
+// between processes on the same host. Set IOIMG_REPLICA_ID to pin a value.
+func defaultReplicaID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
 func envInt(k string, d int) int {

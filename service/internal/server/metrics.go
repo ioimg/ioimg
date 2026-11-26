@@ -28,6 +28,9 @@ type Metrics struct {
 	FetchNs     atomic.Uint64
 	L2Hits      atomic.Uint64
 	Concurrency atomic.Uint64
+	LeaseGrants atomic.Uint64
+	LeaseDenied atomic.Uint64
+	LeaseSpent  atomic.Uint64
 
 	errorMu sync.Mutex
 	byCode  map[string]uint64
@@ -74,6 +77,9 @@ func (m *Metrics) Render(cacheEntries int, cacheBytes int64) string {
 	line("ioimg_cache_l2_hits_total", "Hits served by the L2 object cache.", "counter", m.L2Hits.Load())
 	line("ioimg_errors_total", "Errors returned.", "counter", m.Errors.Load())
 	line("ioimg_concurrency_rejected_total", "Requests rejected by a project concurrency limit.", "counter", m.Concurrency.Load())
+	line("ioimg_quota_lease_grants_total", "Quota leases granted by the control plane.", "counter", m.LeaseGrants.Load())
+	line("ioimg_quota_lease_denied_total", "Quota lease requests denied or failed.", "counter", m.LeaseDenied.Load())
+	line("ioimg_quota_lease_spent_total", "Transforms spent from a quota lease.", "counter", m.LeaseSpent.Load())
 	line("ioimg_source_bytes_total", "Bytes fetched from origins.", "counter", m.BytesIn.Load())
 	line("ioimg_bytes_out_total", "Bytes served.", "counter", m.BytesOut.Load())
 	line("ioimg_transform_ns_total", "Time spent transforming.", "counter", m.TransformNs.Load())

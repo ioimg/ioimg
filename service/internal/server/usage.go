@@ -12,8 +12,10 @@ import (
 // plane in batches. Reporting is best-effort: failed batches are merged back.
 type usage struct {
 	mu sync.Mutex
-	// pending is what has not been acknowledged by the control plane yet.
-	pending map[string]*tenant.UsageReport
+	// pending is what has not been acknowledged by the control plane yet. It is
+	// keyed per project and lease so a report can carry the reservation it spent
+	// from without mixing leases together.
+	pending map[usageKey]*tenant.UsageReport
 	// total is everything this process has counted since it started. It never
 	// resets, so a successful flush cannot refill a project's quota: the
 	// control-plane snapshot is only as fresh as the last revision the poller
@@ -21,23 +23,29 @@ type usage struct {
 	total map[string]*tenant.UsageReport
 }
 
+type usageKey struct {
+	projectID string
+	leaseID   string
+}
+
 func newUsage() *usage {
 	return &usage{
-		pending: map[string]*tenant.UsageReport{},
+		pending: map[usageKey]*tenant.UsageReport{},
 		total:   map[string]*tenant.UsageReport{},
 	}
 }
 
-func (u *usage) add(projectID string, transforms, bytesIn, bytesOut int64) {
+func (u *usage) add(projectID, leaseID string, transforms, bytesIn, bytesOut int64) {
 	if projectID == "" {
 		return
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	r := u.pending[projectID]
+	key := usageKey{projectID: projectID, leaseID: leaseID}
+	r := u.pending[key]
 	if r == nil {
-		r = &tenant.UsageReport{ProjectID: projectID}
-		u.pending[projectID] = r
+		r = &tenant.UsageReport{ProjectID: projectID, LeaseID: leaseID}
+		u.pending[key] = r
 	}
 	r.Transforms += transforms
 	r.BytesIn += bytesIn
@@ -73,7 +81,7 @@ func (u *usage) take() []tenant.UsageReport {
 	for _, r := range u.pending {
 		out = append(out, *r)
 	}
-	u.pending = map[string]*tenant.UsageReport{}
+	u.pending = map[usageKey]*tenant.UsageReport{}
 	return out
 }
 
@@ -81,10 +89,11 @@ func (u *usage) mergeBack(reports []tenant.UsageReport) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for _, r := range reports {
-		p := u.pending[r.ProjectID]
+		key := usageKey{projectID: r.ProjectID, leaseID: r.LeaseID}
+		p := u.pending[key]
 		if p == nil {
-			p = &tenant.UsageReport{ProjectID: r.ProjectID}
-			u.pending[r.ProjectID] = p
+			p = &tenant.UsageReport{ProjectID: r.ProjectID, LeaseID: r.LeaseID}
+			u.pending[key] = p
 		}
 		p.Transforms += r.Transforms
 		p.BytesIn += r.BytesIn
@@ -113,7 +122,14 @@ func (s *Server) quotaRemaining(p *tenant.Policy) int64 {
 }
 
 func (s *Server) countUsage(projectID string, bytesOut int64) {
-	s.usage.add(projectID, 1, 0, bytesOut)
+	s.countUsageLease(projectID, "", bytesOut)
+}
+
+func (s *Server) countUsageLease(projectID, leaseID string, bytesOut int64) {
+	s.usage.add(projectID, leaseID, 1, 0, bytesOut)
+	if leaseID != "" {
+		s.metrics.LeaseSpent.Add(1)
+	}
 }
 
 func (s *Server) usageLoop(ctx context.Context) {

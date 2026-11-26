@@ -25,21 +25,27 @@ import (
 // plane. The real control plane lives in a separate repository; this fixture
 // keeps the data-plane integration test self-contained.
 type fakeControl struct {
-	mu       sync.Mutex
-	revision int64
-	projects map[string]tenant.Project
-	srv      *httptest.Server
-	origin   *httptest.Server
-	payload  []byte
+	mu          sync.Mutex
+	revision    int64
+	projects    map[string]tenant.Project
+	leaseAmount int64
+	leaseTotal  int64 // -1 means the stub keeps granting leaseAmount
+	leaseCalls  int
+	leaseFail   bool
+	usage       []tenant.UsageReport
+	srv         *httptest.Server
+	origin      *httptest.Server
+	payload     []byte
 }
 
 func newFakeControl(t *testing.T) *fakeControl {
 	t.Helper()
-	f := &fakeControl{revision: 1, projects: map[string]tenant.Project{}}
+	f := &fakeControl{revision: 1, projects: map[string]tenant.Project{}, leaseTotal: -1}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/config/snapshot", f.handleSnapshot)
 	mux.HandleFunc("/v1/usage", f.handleUsage)
+	mux.HandleFunc("/v1/quota/lease", f.handleLease)
 	mux.HandleFunc("/v1/projects", f.handleProjects)
 	mux.HandleFunc("/v1/projects/", f.handleProject)
 	f.srv = httptest.NewServer(mux)
@@ -75,8 +81,64 @@ func (f *fakeControl) handleUsage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	_, _ = io.Copy(io.Discard, r.Body)
+	var body struct {
+		Reports []tenant.UsageReport `json:"reports"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.usage = append(f.usage, body.Reports...)
+	f.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeControl) handleLease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		ProjectID string `json:"projectId"`
+		ReplicaID string `json:"replicaId"`
+		Want      int64  `json:"want"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.leaseCalls++
+	if f.leaseFail {
+		f.mu.Unlock()
+		http.Error(w, "control plane down", http.StatusServiceUnavailable)
+		return
+	}
+	amount := f.leaseAmount
+	if amount < 0 {
+		amount = 0
+	}
+	if f.leaseTotal >= 0 && amount > f.leaseTotal {
+		amount = f.leaseTotal
+	}
+	if amount > in.Want {
+		amount = in.Want
+	}
+	if f.leaseTotal >= 0 {
+		f.leaseTotal -= amount
+	}
+	id := ""
+	if amount > 0 {
+		id = fmt.Sprintf("lease-%d", f.leaseCalls)
+	}
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"leaseId":   id,
+		"amount":    amount,
+		"expiresAt": time.Now().Add(time.Minute),
+	})
 }
 
 func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -85,17 +147,18 @@ func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		ID             string            `json:"id"`
-		Name           string            `json:"name"`
-		Domains        []string          `json:"domains"`
-		Allowlist      []string          `json:"allowlist"`
-		AllowAnyHost   bool              `json:"allowAnyHost"`
-		SignedOnly     bool              `json:"signedOnly"`
-		ExpiryRequired bool              `json:"expiryRequired"`
-		Presets        map[string]string `json:"presets"`
-		Concurrency    int               `json:"concurrency"`
-		RateRPS        float64           `json:"rateRps"`
-		RateBurst      int               `json:"rateBurst"`
+		ID                string            `json:"id"`
+		Name              string            `json:"name"`
+		Domains           []string          `json:"domains"`
+		Allowlist         []string          `json:"allowlist"`
+		AllowAnyHost      bool              `json:"allowAnyHost"`
+		SignedOnly        bool              `json:"signedOnly"`
+		ExpiryRequired    bool              `json:"expiryRequired"`
+		Presets           map[string]string `json:"presets"`
+		Concurrency       int               `json:"concurrency"`
+		RateRPS           float64           `json:"rateRps"`
+		RateBurst         int               `json:"rateBurst"`
+		MonthlyTransforms int64             `json:"monthlyTransforms"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -113,9 +176,10 @@ func (f *fakeControl) handleProjects(w http.ResponseWriter, r *http.Request) {
 		Presets:        in.Presets,
 		SigningKeys:    []tenant.SigningKey{{Kid: kid, Secret: secret}},
 		Limits: tenant.Limits{
-			Concurrency: in.Concurrency,
-			RateRPS:     in.RateRPS,
-			RateBurst:   in.RateBurst,
+			MonthlyTransforms: in.MonthlyTransforms,
+			Concurrency:       in.Concurrency,
+			RateRPS:           in.RateRPS,
+			RateBurst:         in.RateBurst,
 		},
 	}
 	f.mu.Lock()
