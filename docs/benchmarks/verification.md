@@ -91,11 +91,11 @@ plane dengan cache terpisah, origin nginx lokal, korpus DIV2K.
 
 ### 6.1 Kuota fail-closed lintas replika
 
-Tiga bug ditemukan saat menguji, semuanya nyata:
+Empat bug ditemukan saat menguji, semuanya nyata:
 
 1. **Transport hanya meneruskan tiga header.** `X-IOIMG-Project`,
    pass-through header, cookie, `Range`, dan `X-Forwarded-For` hilang di jalur
-   celeris/fiber. Akibatnya rate limit per-IP di belakang CDN salah dan header
+   celeris/fiber. Rate limit per-IP di belakang CDN jadi salah dan header
    proyek tidak berfungsi.
 2. **Usage report tanpa ID.** Data plane mengirim `id` kosong; kontrol plane
    memakai ID itu sebagai kunci idempotensi, jadi semua report setelah yang
@@ -103,24 +103,47 @@ Tiga bug ditemukan saat menguji, semuanya nyata:
 3. **Lease dihitung dari sisa, bukan dari jumlah.** Reservasi hanya
    `SUM(amount - used)`, sehingga lease yang sudah dihabiskan tapi belum
    dilaporkan tidak lagi dihitung — kontrol plane terus memberi lease baru.
+4. **Replika menolak alih-alih menunggu.** Saat lease habis dan refresh sedang
+   berjalan, request langsung 429. Karena 429 murah (~30 µs), satu round trip
+   kontrol plane 35 ms menjadi ratusan penolakan. Sekarang request menunggu
+   refresh (maks `leaseWait`) lalu lanjut.
 
-Ditambah satu bug di sisi data plane: budget menambahkan sisa kuota snapshot
-(lag 10 detik) **di atas** lease, dan saat kehabisan lease replika tidak
-menunggu refresh yang sedang berjalan — ia langsung menolak, sehingga satu
-round trip 35 ms menjadi ratusan 429.
+Hasil uji (data plane final, `ioimgC`):
 
-Hasil uji 600 request dibagi dua replika, plan 200 transform:
+| Uji | Plan | Diterima | 429 | `usage_monthly` | `SUM(lease.amount)` |
+| --- | --- | --- | --- | --- | --- |
+| 1 replika, 8 koneksi | 400 | **400** | 568 | 400 | 400 |
+| 2 replika, 1 koneksi tiap replika | 200 | 95 + 94 = **189** | 6400 | 189 | 200 |
 
-| | Sebelum | Sesudah |
-| --- | --- | --- |
-| Diterima | 238 (plan 120) | **199 (plan 200)** |
-| 429 | 462 | 401 |
-| `usage_monthly` | 1 | **199** |
-| `SUM(lease.amount)` | — | 200 (tidak melebihi plan) |
+Tidak ada overshoot. Yang perlu diketahui: pada uji dua replika 11 unit tidak
+terpakai, karena lease diberikan per blok (sepersepuluh plan) dan sisa blok baru
+kembali setelah lease kedaluwarsa 5 menit. Jadi saat plan hampir habis, ekspektasi
+yang benar adalah "tidak pernah lebih dari plan", bukan "selalu tepat plan".
 
-Tidak ada usage yang hilang atau dobel: `/v1/stats` = jumlah respons 200.
+Sebelum perbaikan, uji yang sama (plan 120) menerima **238**.
 
-### 6.2 Kapasitas agregat (laptop 16 core, tanpa pin CPU)
+### 6.2 Sensitivitas latensi kontrol plane
+
+Kontrol plane disalip proxy yang menambah jeda, sehingga lease punya biaya
+round trip realistis. Plan 400, 2 koneksi, semua MISS:
+
+| Latensi lease | Diterima | 429 | p50 | p99 | Grant |
+| --- | --- | --- | --- | --- | --- |
+| ~45 ms (lokal) | 401 → 400 setelah fix | 104 | 17,5 ms | 101 ms | 10 |
+| ~350 ms | 607 (plan 1000) | 18 | 16,4 ms | **379 ms** | 7 |
+
+Kesimpulan: setelah perbaikan, latensi kontrol plane muncul sebagai **ekor
+latensi**, bukan hujan error — satu round trip lease terlihat sebagai p99, dan
+p50 tidak berubah. Sebelum perbaikan, kondisi yang sama menghasilkan ratusan 429
+dalam 35 ms.
+
+Catatan: baris pertama diukur sebelum kredit bootstrap dihapus. Setelah itu
+replika tidak lagi boleh memakai sisa kuota snapshot sebelum lease pertama
+tiba; biayanya satu round trip pada request pertama per proses, dan bila
+kontrol plane tidak bisa dihubungi sama sekali, replika menolak melayani
+(fail-closed) alih-alih menebak sisa kuota.
+
+### 6.3 Kapasitas agregat (laptop 16 core, tanpa pin CPU)
 
 | Konfigurasi | Total img/s | p50 |
 | --- | --- | --- |
@@ -131,14 +154,47 @@ Tidak ada usage yang hilang atau dobel: `/v1/stats` = jumlah respons 200.
 Dua replika × 1 koneksi menghasilkan total yang sama dengan satu proses × 2
 koneksi: kapasitas mengikuti jumlah transform paralel, bukan jumlah proses.
 Menambah replika tidak menambah throughput per core — yang bertambah adalah
-ketersediaan. Pada 4 transform paralel totalnya 212 img/s, konsisten dengan
-sweep konkurensi di `concurrency-and-memory.md`.
+ketersediaan.
 
-## 7. Yang masih belum diverifikasi
+## 7. ACME: penerbitan sertifikat sungguhan
 
-- **Dua mesin sungguhan**: semua angka di atas dari satu laptop. Dua replika di
-  mesin berbeda (network hop ke kontrol plane, latensi lease nyata) belum diuji.
-- **Penerbitan sertifikat ACME nyata**: policy, cache, dan redirect sudah diuji
-  offline; belum pernah meminta sertifikat dari Let's Encrypt.
-- **Dampak latensi kontrol plane**: lease butuh ~35 ms di laptop ini; di mesin
-  lain angka itu menentukan seberapa sering 429 muncul saat kuota habis.
+Selama ini hanya policy/cache/redirect yang diuji. Sekarang alurnya dijalankan
+sungguhan terhadap **Pebble** (ACME server uji milik Let's Encrypt), dengan
+`IOIMG_TLS_CA` menunjuk directory Pebble dan `SSL_CERT_FILE` mempercayai CA-nya.
+
+```bash
+docker run -d --name pebble -p 14000:14000 -p 15000:15000 \
+  -e PEBBLE_VA_ALWAYS_VALID=1 -e PEBBLE_VA_NOSLEEP=1 \
+  ghcr.io/letsencrypt/pebble:latest
+# data plane
+IOIMG_TLS=auto IOIMG_TLS_ADDR=:8443 IOIMG_TLS_HTTP_ADDR=:10380 \
+IOIMG_TLS_CACHE_DIR=/tmp/acme-cache IOIMG_TLS_CA=https://localhost:14000/dir \
+IOIMG_TLS_HOSTS=bench.local SSL_CERT_FILE=/tmp/pebble-ca.pem \
+IOIMG_ADDR=:10331 /tmp/ioimgB
+```
+
+Hasil:
+
+| Pemeriksaan | Hasil |
+| --- | --- |
+| Sertifikat diterbitkan | issuer `CN=Pebble Intermediate CA`, masa berlaku 6 hari |
+| HTTPS melayani gambar | `200`, 55.329 B (identik dengan jalur plain) |
+| Cache sertifikat | `/tmp/acme-cache/bench.local` + `acme_account+key` |
+| Restart proses | sertifikat dipakai ulang (mtime tidak berubah → tidak menerbitkan ulang) |
+| HTTP → HTTPS | `308` ke `https://<host>:8443/...` |
+| SNI tidak dikenal | handshake ditolak (`tlsv1 alert internal error`) |
+| `/healthz` di port plain | tetap `200` (load balancer tidak perlu sertifikat) |
+
+Yang **belum** diuji: penerbitan dari Let's Encrypt sungguhan, yang butuh domain
+publik, port 80/443 terbuka, dan kuota rate limit CA nyata. Semua logika di atas
+identik, hanya directory URL dan kepercayaan CA yang berbeda.
+
+## 8. Yang masih belum diverifikasi
+
+- **Dua mesin fisik**: semua angka dari satu laptop. Dua replika di mesin
+  berbeda (network hop nyata, jam berbeda, kegagalan jaringan) belum diuji;
+  latensi lease disimulasikan lewat proxy, bukan lewat jaringan sungguhan.
+- **Let's Encrypt produksi**: lihat §7.
+- **Dampak pemisahan jaringan pada single-flight cache L2**: dua replika masih
+  berbagi cache dir lokal masing-masing; koordinasi penulisan L2 antar replika
+  belum diuji.

@@ -97,7 +97,12 @@ func (l *leaseBudget) stateLocked(projectID string) *leaseState {
 	return st
 }
 
-func (l *leaseBudget) reserve(projectID string, base int64) *quotaReservation {
+// reserve claims one unit from the replica's lease. It never spends unreserved
+// quota: the snapshot remainder lags the control plane by a usage flush, so
+// granting from it before the first lease lands is exactly how replicas
+// overshoot the plan. A replica with no lease therefore asks for one (one round
+// trip, bounded by leaseWait) instead of serving on credit.
+func (l *leaseBudget) reserve(projectID string) *quotaReservation {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -108,11 +113,7 @@ func (l *leaseBudget) reserve(projectID string, base int64) *quotaReservation {
 		unspent = st.grant.unspent
 		lastAmount = st.grant.amount
 	}
-	// A live lease is the only spendable budget once one exists. The snapshot
-	// remainder (base) lags the control plane by a whole usage flush, so adding
-	// it on top of the lease is what let two replicas accept 238 transforms
-	// against a plan of 120. base is the bootstrap path only: no lease yet.
-	remaining := base + unspent
+	remaining := int64(0)
 	if st != nil {
 		remaining = unspent
 	}
@@ -123,9 +124,7 @@ func (l *leaseBudget) reserve(projectID string, base int64) *quotaReservation {
 		remaining:  remaining,
 	}
 	if remaining <= 0 {
-		// Bootstrap with nothing left still needs a lease attempt, otherwise a
-		// replica whose snapshot says "exhausted" can never recover.
-		res.needLease = st != nil || base <= 0
+		res.needLease = true
 		res.needRefresh = st == nil
 		return res
 	}
@@ -209,7 +208,7 @@ func (s *Server) acquireQuota(p *tenant.Policy) *quotaReservation {
 		remaining := s.quotaRemaining(p)
 		return &quotaReservation{allowed: remaining != 0, remaining: remaining}
 	}
-	return s.leases.reserve(p.ID, s.quotaRemaining(p))
+	return s.leases.reserve(p.ID)
 }
 
 // leaseWant is how much a single lease asks for: a tenth of the plan, capped so
@@ -239,7 +238,7 @@ func (s *Server) ensureLease(p *tenant.Policy, r *quotaReservation) *quotaReserv
 		// trip keeps the request in the "slow" bucket instead of turning the
 		// whole burst into 429s.
 		s.leases.waitRefresh(p.ID, leaseWait)
-		retry := s.leases.reserve(p.ID, s.quotaRemaining(p))
+		retry := s.leases.reserve(p.ID)
 		retry.needLease = false
 		return retry
 	}
@@ -258,7 +257,7 @@ func (s *Server) ensureLease(p *tenant.Policy, r *quotaReservation) *quotaReserv
 		s.metrics.LeaseGrants.Add(1)
 	}
 	s.leases.endRefresh(p.ID, lease)
-	retry := s.leases.reserve(p.ID, s.quotaRemaining(p))
+	retry := s.leases.reserve(p.ID)
 	retry.needLease = false
 	return retry
 }
