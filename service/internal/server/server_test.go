@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ioimg/ioimg/service/internal/config"
+	"github.com/ioimg/ioimg/service/internal/source"
 	"github.com/ioimg/ioimg/service/pkg/ops"
 	"github.com/ioimg/ioimg/service/pkg/sign"
 )
@@ -44,6 +46,9 @@ type harness struct {
 	hits   atomic.Int64
 	cfg    config.Config
 	signer *sign.Signer
+	// originHeader holds the most recent upstream request headers so tests can
+	// prove which headers were (not) forwarded.
+	originHeader atomic.Value
 }
 
 func newHarness(t *testing.T, mutate func(*config.Config)) *harness {
@@ -56,6 +61,7 @@ func newHarnessOpts(t *testing.T, mutate func(*config.Config), opts func(*Option
 	h := &harness{}
 	h.origin = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.hits.Add(1)
+		h.originHeader.Store(r.Header.Clone())
 		if r.URL.Path == "/missing.jpg" {
 			http.NotFound(w, r)
 			return
@@ -401,4 +407,190 @@ func TestPurge(t *testing.T) {
 func urlQueryEscape(s string) string {
 	r := strings.NewReplacer(":", "%3A", "/", "%2F", "?", "%3F", "&", "%26", "=", "%3D")
 	return r.Replace(s)
+}
+
+func encryptedSourceToken(t *testing.T, h *harness, source, kid string) (string, *sign.SourceCipher) {
+	t.Helper()
+	cipher, err := sign.NewSourceCipher(h.signer.Keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := cipher.Encrypt(source, kid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token, cipher
+}
+
+func tamperToken(t *testing.T, token string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "es_"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 0xff
+	return "es_" + base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func TestEncryptedSourceRoundTrip(t *testing.T) {
+	h := newHarness(t, nil)
+	source := h.origin.URL + "/photo.jpg"
+	token, _ := encryptedSourceToken(t, h, source, "test")
+
+	resp := h.get(t, "/w_40,f_jpeg/"+token, nil)
+	if resp.StatusCode != 200 {
+		code, errCode := decodeErr(t, resp)
+		t.Fatalf("want 200, got %d %s", code, errCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("unexpected content type: %s", ct)
+	}
+	if got := resp.Header.Get("X-IOIMG-Source-Key"); got != "" {
+		t.Fatalf("key id must stay hidden unless debug logging is on, got %q", got)
+	}
+	resp.Body.Close()
+
+	// The query-based endpoint accepts the same token.
+	resp = h.get(t, "/img?src="+token+"&w=40&f=jpeg", nil)
+	if resp.StatusCode != 200 {
+		code, errCode := decodeErr(t, resp)
+		t.Fatalf("query mode: want 200, got %d %s", code, errCode)
+	}
+	resp.Body.Close()
+
+	// Query inside the encrypted plaintext must survive (the request query is
+	// reserved for exp/kid/sig and must not corrupt the token).
+	resp = h.get(t, "/w_40,f_jpeg/"+token+"?exp=9999999999&kid=test", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("reserved query params broke es_ source: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestEncryptedSourceDebugKeyHeader(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.LogLevel = slog.LevelDebug })
+	token, _ := encryptedSourceToken(t, h, h.origin.URL+"/photo.jpg", "test")
+	resp := h.get(t, "/w_40,f_jpeg/"+token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-IOIMG-Source-Key"); got != "test" {
+		t.Fatalf("want key id header test, got %q", got)
+	}
+}
+
+func TestEncryptedSourceRejections(t *testing.T) {
+	h := newHarness(t, nil)
+	source := h.origin.URL + "/photo.jpg"
+	token, _ := encryptedSourceToken(t, h, source, "test")
+
+	cases := map[string]string{
+		"tampered": tamperToken(t, token),
+		"garbage":  "es_not-valid-base64!!",
+	}
+	for name, tok := range cases {
+		code, errCode := decodeErr(t, h.get(t, "/w_40,f_jpeg/"+tok, nil))
+		if code != 400 || errCode != "invalid_encrypted_source" {
+			t.Fatalf("%s: want 400 invalid_encrypted_source, got %d %s", name, code, errCode)
+		}
+	}
+
+	ghost, err := sign.NewSourceCipher([]sign.Key{{ID: "ghost", Secret: []byte("other")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := ghost.Encrypt(source, "ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, errCode := decodeErr(t, h.get(t, "/w_40,f_jpeg/"+unknown, nil))
+	if code != 400 || errCode != "invalid_encrypted_source" {
+		t.Fatalf("unknown kid: want 400 invalid_encrypted_source, got %d %s", code, errCode)
+	}
+}
+
+func TestEncryptedSourceStillHonoursAllowlist(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) {
+		c.AllowAnyHost = false
+		c.Allowlist = []string{"only.example.com"}
+	})
+	token, _ := encryptedSourceToken(t, h, h.origin.URL+"/photo.jpg", "test")
+	code, errCode := decodeErr(t, h.get(t, "/w_40,f_jpeg/"+token, nil))
+	if code != 403 || errCode != "source_not_allowed" {
+		t.Fatalf("want 403 source_not_allowed, got %d %s", code, errCode)
+	}
+}
+
+func TestCustomResponseHeaders(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) {
+		c.ResponseHeaders = []config.ResponseHeader{
+			{Name: "X-Robots-Tag", Value: "noindex"},
+			{Name: "Cross-Origin-Resource-Policy", Value: "cross-origin"},
+		}
+	})
+	resp := h.get(t, "/w_40,f_jpeg/"+h.origin.URL+"/photo.jpg", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Robots-Tag"); got != "noindex" {
+		t.Fatalf("custom response header missing, got %q", got)
+	}
+}
+
+// TestSecurityFeaturesDefaultOffUnchanged is the regression guard for the
+// requirement that an unconfigured deployment behaves exactly as before: no
+// request header is forwarded upstream and no custom response header appears.
+func TestSecurityFeaturesDefaultOffUnchanged(t *testing.T) {
+	h := newHarness(t, nil)
+	resp := h.get(t, "/w_40,f_jpeg/"+h.origin.URL+"/photo.jpg", map[string]string{
+		"X-Trace":       "trace-1",
+		"Authorization": "Bearer client-token",
+		"Cookie":        "session=abc",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		code, errCode := decodeErr(t, resp)
+		t.Fatalf("want 200, got %d %s", code, errCode)
+	}
+	for _, name := range []string{"X-IOIMG-Source-Key", "X-Robots-Tag", "Cross-Origin-Resource-Policy", "X-Test"} {
+		if got := resp.Header.Get(name); got != "" {
+			t.Fatalf("unconfigured deployment emitted %s=%q", name, got)
+		}
+	}
+	upstream, _ := h.originHeader.Load().(http.Header)
+	for _, name := range []string{"X-Trace", "Authorization", "Cookie"} {
+		if got := upstream.Get(name); got != "" {
+			t.Fatalf("unconfigured deployment forwarded %s=%q upstream", name, got)
+		}
+	}
+	if got := upstream.Get("User-Agent"); got != "ioimg-test" {
+		t.Fatalf("baseline upstream User-Agent changed: %q", got)
+	}
+}
+
+func TestSourceAuthSecretsNeverLoggedOrEchoed(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	const secret = "Bearer super-secret-source-token"
+	h := newHarnessOpts(t, func(c *config.Config) {
+		c.SourceAuth = map[string]source.Auth{
+			"127.0.0.1": {Name: "Authorization", Value: secret},
+		}
+		c.PassthroughHeaders = []string{"X-Trace"}
+	}, func(o *Options) { o.Logger = logger })
+
+	resp := h.get(t, "/w_40,f_jpeg/"+h.origin.URL+"/missing.jpg", map[string]string{"X-Trace": "trace-value"})
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", resp.StatusCode)
+	}
+	if strings.Contains(string(body), secret) || strings.Contains(logs.String(), secret) {
+		t.Fatalf("source auth secret leaked; body=%s logs=%s", body, logs.String())
+	}
 }

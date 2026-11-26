@@ -62,6 +62,7 @@ type Policy struct {
 	FallbackRedirect bool
 	Presets          map[string]string
 	Signing          *sign.Signer
+	SourceCipher     *sign.SourceCipher
 	MonthlyLimit     int64
 	Concurrency      int
 	Usage            Usage
@@ -95,6 +96,9 @@ func NewPolicy(p Project) *Policy {
 			Keys:           keys,
 			IncludeExp:     true,
 			ExpiryRequired: p.ExpiryRequired,
+		}
+		if cipher, err := sign.NewSourceCipher(keys); err == nil {
+			pol.SourceCipher = cipher
 		}
 	}
 	return pol

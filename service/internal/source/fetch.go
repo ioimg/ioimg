@@ -31,15 +31,23 @@ type Result struct {
 	Status      int
 }
 
+// Auth is one upstream authorization header applied to an exact host.
+type Auth struct {
+	Name  string
+	Value string
+}
+
 // Fetcher is safe for concurrent use.
 type Fetcher struct {
-	client       *http.Client
-	timeout      time.Duration
-	maxBytes     int64
-	rawMax       int64
-	allowHost    func(string) bool
-	allowPrivate bool
-	userAgent    string
+	client             *http.Client
+	timeout            time.Duration
+	maxBytes           int64
+	rawMax             int64
+	allowHost          func(string) bool
+	allowPrivate       bool
+	userAgent          string
+	sourceAuth         map[string]Auth
+	passthroughHeaders []string
 }
 
 // Options configures a Fetcher.
@@ -53,6 +61,12 @@ type Options struct {
 	AllowHost    func(string) bool
 	AllowPrivate bool
 	UserAgent    string
+	// SourceAuth maps an exact lowercase host to one header sent only to that
+	// host. It is never sent on a redirect to another host.
+	SourceAuth map[string]Auth
+	// PassthroughHeaders lists request headers copied to the upstream. Values
+	// are validated on every request and dropped on cross-host redirects.
+	PassthroughHeaders []string
 }
 
 // New builds a fetcher whose dialer re-checks every resolved IP, closing the
@@ -86,18 +100,26 @@ func New(o Options) *Fetcher {
 		ResponseHeaderTimeout: o.Timeout,
 	}
 	f := &Fetcher{
-		timeout:      o.Timeout,
-		maxBytes:     o.MaxBytes,
-		rawMax:       o.RawMaxBytes,
-		allowHost:    o.AllowHost,
-		allowPrivate: o.AllowPrivate,
-		userAgent:    o.UserAgent,
+		timeout:            o.Timeout,
+		maxBytes:           o.MaxBytes,
+		rawMax:             o.RawMaxBytes,
+		allowHost:          o.AllowHost,
+		allowPrivate:       o.AllowPrivate,
+		userAgent:          o.UserAgent,
+		sourceAuth:         make(map[string]Auth, len(o.SourceAuth)),
+		passthroughHeaders: append([]string(nil), o.PassthroughHeaders...),
+	}
+	for host, auth := range o.SourceAuth {
+		f.sourceAuth[normalizeHost(host)] = auth
 	}
 	f.client = &http.Client{
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")
+			}
+			if prev := via[len(via)-1]; !strings.EqualFold(normalizeHost(prev.URL.Hostname()), normalizeHost(req.URL.Hostname())) {
+				f.stripForwardedHeaders(req)
 			}
 			return f.checkURL(req.URL)
 		},
@@ -108,7 +130,14 @@ func New(o Options) *Fetcher {
 // Fetch retrieves an absolute http(s) URL, enforcing the configured source
 // size limit.
 func (f *Fetcher) Fetch(ctx context.Context, raw string) (*Result, error) {
-	return f.fetch(ctx, raw, f.maxBytes)
+	return f.fetch(ctx, raw, f.maxBytes, nil)
+}
+
+// FetchWithHeaders is Fetch plus request-header pass-through. in carries the
+// headers of the original client request; only configured names with
+// well-formed values are copied.
+func (f *Fetcher) FetchWithHeaders(ctx context.Context, raw string, in http.Header) (*Result, error) {
+	return f.fetch(ctx, raw, f.maxBytes, in)
 }
 
 // FetchRaw retrieves an absolute http(s) URL for a raw_ pass-through. imgproxy
@@ -117,10 +146,15 @@ func (f *Fetcher) Fetch(ctx context.Context, raw string) (*Result, error) {
 // upstream must not be able to exhaust the process. Allowlist and SSRF guards
 // still apply.
 func (f *Fetcher) FetchRaw(ctx context.Context, raw string) (*Result, error) {
-	return f.fetch(ctx, raw, f.rawMax)
+	return f.fetch(ctx, raw, f.rawMax, nil)
 }
 
-func (f *Fetcher) fetch(ctx context.Context, raw string, maxBytes int64) (*Result, error) {
+// FetchRawWithHeaders is FetchRaw plus request-header pass-through.
+func (f *Fetcher) FetchRawWithHeaders(ctx context.Context, raw string, in http.Header) (*Result, error) {
+	return f.fetch(ctx, raw, f.rawMax, in)
+}
+
+func (f *Fetcher) fetch(ctx context.Context, raw string, maxBytes int64, in http.Header) (*Result, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, ErrInvalidSource
@@ -136,6 +170,7 @@ func (f *Fetcher) fetch(ctx context.Context, raw string, maxBytes int64) (*Resul
 	}
 	req.Header.Set("User-Agent", f.userAgent)
 	req.Header.Set("Accept", "image/*")
+	f.applyForwardedHeaders(req, in)
 	resp, err := f.client.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || osTimeout(err) {
@@ -169,6 +204,60 @@ func (f *Fetcher) fetch(ctx context.Context, raw string, maxBytes int64) (*Resul
 		return nil, ErrOrigin
 	}
 	return &Result{Body: body, ContentType: resp.Header.Get("Content-Type"), Status: resp.StatusCode}, nil
+}
+
+// applyForwardedHeaders copies configured request headers and the exact-host
+// upstream authorization. Source auth wins over pass-through for the same name.
+func (f *Fetcher) applyForwardedHeaders(req *http.Request, in http.Header) {
+	if in != nil {
+		for _, name := range f.passthroughHeaders {
+			values := in.Values(name)
+			if !validForwardValues(values) {
+				continue
+			}
+			for _, v := range values {
+				req.Header.Add(name, v)
+			}
+		}
+	}
+	if auth, ok := f.sourceAuth[normalizeHost(req.URL.Hostname())]; ok {
+		req.Header.Set(auth.Name, auth.Value)
+	}
+}
+
+// stripForwardedHeaders removes every configured credential/forwarded header
+// from a redirect that changes host. This is deliberately broader than removing
+// only the new host's auth: an Authorization meant for A must never reach B.
+func (f *Fetcher) stripForwardedHeaders(req *http.Request) {
+	for _, name := range f.passthroughHeaders {
+		req.Header.Del(name)
+	}
+	for _, auth := range f.sourceAuth {
+		req.Header.Del(auth.Name)
+	}
+	// Go's client already drops these across domains; repeat it defensively for
+	// names that were not configured but may have been copied by a middleware.
+	req.Header.Del("Authorization")
+	req.Header.Del("Cookie")
+}
+
+func validForwardValues(values []string) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, v := range values {
+		if len(v) > 1024 {
+			return false
+		}
+		if strings.ContainsAny(v, "\r\n") {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
 
 func (f *Fetcher) checkURL(u *url.URL) error {

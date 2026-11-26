@@ -90,12 +90,14 @@ func New(cfg config.Config, o Options) (*Server, error) {
 	fetcher := o.Fetcher
 	if fetcher == nil {
 		fetcher = source.New(source.Options{
-			Timeout:      cfg.SourceTimeout,
-			MaxBytes:     cfg.SourceMaxBytes,
-			RawMaxBytes:  cfg.SourceRawMaxBytes,
-			AllowHost:    func(string) bool { return true },
-			AllowPrivate: cfg.AllowPrivate,
-			UserAgent:    cfg.SourceUserAgent,
+			Timeout:            cfg.SourceTimeout,
+			MaxBytes:           cfg.SourceMaxBytes,
+			RawMaxBytes:        cfg.SourceRawMaxBytes,
+			AllowHost:          func(string) bool { return true },
+			AllowPrivate:       cfg.AllowPrivate,
+			UserAgent:          cfg.SourceUserAgent,
+			SourceAuth:         cfg.SourceAuth,
+			PassthroughHeaders: cfg.PassthroughHeaders,
 		})
 	}
 	m := o.Metrics
@@ -329,6 +331,13 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	key := cache.Key(config.CacheKeyVersion+"|"+s.version+"|"+policy.ID, target.Canonical, target.Source, string(format))
 
 	h := w.Header()
+	s.applyResponseHeaders(h)
+	if target.SourceKeyID != "" && s.cfg.LogLevel == slog.LevelDebug {
+		// Key ids are rotation metadata, not secrets, but only reveal which one
+		// decrypted the source when debug logging was explicitly enabled.
+		h.Set("X-IOIMG-Source-Key", target.SourceKeyID)
+		s.log.Debug("encrypted source decrypted", "key_id", target.SourceKeyID)
+	}
 	if !best {
 		h.Set("ETag", etagFor(key, format, false))
 	}
@@ -412,7 +421,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 				return result{data: data, format: concreteFormat(format, data), hit: true, l2: true, mod: time.Now()}, nil
 			}
 		}
-		data, timings, chosen, err := s.render(r.Context(), target, format)
+		data, timings, chosen, err := s.render(r.Context(), target, format, r.Header)
 		if err != nil {
 			return nil, err
 		}
@@ -534,7 +543,7 @@ func normalizeSkipExtension(ext string) string {
 }
 
 // render fetches, decodes, transforms, and encodes one image.
-func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byte, map[string]float64, ops.Format, error) {
+func (s *Server) render(ctx context.Context, t Target, format ops.Format, reqHeaders http.Header) ([]byte, map[string]float64, ops.Format, error) {
 	timings := map[string]float64{}
 	total := time.Now()
 
@@ -543,9 +552,13 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	// sources as unchecked); it is still bounded by the raw ceiling, because the
 	// body is buffered here. skp_ keeps the normal limit: it only skips the
 	// transform, not the source checks.
-	fetch := s.fetcher.Fetch
+	fetch := func(ctx context.Context, raw string) (*source.Result, error) {
+		return s.fetcher.FetchWithHeaders(ctx, raw, reqHeaders)
+	}
 	if t.Ops.Raw {
-		fetch = s.fetcher.FetchRaw
+		fetch = func(ctx context.Context, raw string) (*source.Result, error) {
+			return s.fetcher.FetchRawWithHeaders(ctx, raw, reqHeaders)
+		}
 	}
 	src, err := fetch(ctx, t.Source)
 	usedFallback := false
@@ -640,7 +653,7 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 		// A corrupt/undecodable source falls back to the fallback image too: the
 		// commercial products treat "no usable image" the same way.
 		if t.Ops.FallbackURL != "" && errors.Is(err, imaging.ErrDecode) {
-			src, ferr := s.fetcher.Fetch(ctx, t.Ops.FallbackURL)
+			src, ferr := fetch(ctx, t.Ops.FallbackURL)
 			if ferr == nil {
 				s.metrics.Fallback.Add(1)
 				usedFallback = true
@@ -720,6 +733,15 @@ func runPipeline(proc imaging.Processor, src []byte, o ops.Ops, opts imaging.Opt
 func offloadDisabled() bool {
 	off, err := strconv.ParseBool(os.Getenv("IOIMG_OFFLOAD"))
 	return err == nil && !off
+}
+
+// applyResponseHeaders adds the operator-configured headers. Built-in response
+// headers set afterwards win on a name collision, so configuration cannot break
+// Content-Type/Content-Length/ETag framing by accident.
+func (s *Server) applyResponseHeaders(h http.Header) {
+	for _, x := range s.cfg.ResponseHeaders {
+		h.Add(x.Name, x.Value)
+	}
 }
 
 func (s *Server) writeBody(w http.ResponseWriter, r *http.Request, format ops.Format, filename string, data []byte, o ops.Ops) {

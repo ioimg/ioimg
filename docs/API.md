@@ -42,7 +42,30 @@ Contoh:
 
 Keduanya setara; query-based disediakan untuk platform yang sulit menulis path (Shopify proxy, beberapa WAF).
 
-### 1.3 Kanonisasi
+### 1.3 Source terenkripsi (`es_`)
+
+Sebagai alternatif source plaintext, path dapat memakai token terenkripsi:
+
+```
+/{signature}/{ops}/es_<base64url>
+/{ops}/es_<base64url>
+/img?src=es_<base64url>&w=800&f_auto
+```
+
+`<base64url>` adalah ciphertext AES-256-GCM (tanpa padding) yang berisi key id,
+nonce, dan URL sumber. Kunci diturunkan dengan HKDF-SHA256 dari secret
+`IOIMG_SIGNING_KEYS` (info `ioimg-source-enc-v1`): satu kunci per signing key,
+jadi rotasi key tetap kompatibel selama key lama masih dikonfigurasi. Server
+mencoba semua key yang dikonfigurasi dan menolak key id yang tidak dikenal
+dengan `400 invalid_encrypted_source`.
+
+URL hasil dekripsi **tidak** dipercaya dan tetap melewati kanonisasi,
+allowlist, dan guard SSRF yang sama seperti source plaintext. Query string
+sumber harus berada di dalam plaintext token; `exp`/`kid`/`sig` di URL luar
+tetap dipakai untuk signature. Bila `IOIMG_LOG_LEVEL=debug`, respons
+menyertakan `X-IOIMG-Source-Key: <kid>` untuk membantu rotasi.
+
+### 1.4 Kanonisasi
 
 Server **wajib** menormalkan sebelum menghitung signature dan cache key:
 
@@ -248,7 +271,7 @@ diterapkan ke format pemenang.
 ```
 
 - `signature` = `base64url(HMAC-SHA256(key, canonical))` (tanpa padding)
-- `canonical` = `"{ops}/{source}"` → string literal yang **sudah** dinormalkan (§1.3), tanpa leading slash, tanpa query `exp`/`kid`
+- `canonical` = `"{ops}/{source}"` → string literal yang **sudah** dinormalkan (§1.4), tanpa leading slash, tanpa query `exp`/`kid`
 - `exp` (opsional, wajib bila project `expiry_required`): unix timestamp detik
 - `exp` **tidak** ikut di canonical body; ia divalidasi terhadap waktu server. Alternatif yang lebih ketat: sertakan `exp` di canonical (lihat `signature.include_exp`), direkomendasikan `true` agar `exp` tidak bisa diubah tanpa merusak signature.
 
@@ -288,6 +311,8 @@ const url = `https://acme.ioimg.net/${sig}/${ops}/${source}?exp=${exp}`;
 | `Server-Timing` | `fetch;dur=120, decode;dur=18, resize;dur=12, encode;dur=41` | Profil fase |
 | `X-IOIMG-Quota-Remaining` | `482113` | Bila quota aktif |
 | `Last-Modified` | HTTP date | Dari origin atau waktu cache entry |
+| `X-IOIMG-Source-Key` | `k1` | Key id yang mendekripsi `es_`; hanya saat `IOIMG_LOG_LEVEL=debug` |
+| *(custom)* | `X-Robots-Tag: noindex` | Header dari `IOIMG_RESPONSE_HEADERS`; header bawaan menang bila namanya sama |
 
 ## 6. Error model
 
@@ -308,6 +333,7 @@ Semua error non-gambar mengembalikan JSON (kecuali `Accept: image/*` yang memint
 | --- | --- | --- | --- |
 | 400 | `invalid_ops` | Param tidak dikenal / konflik | Tidak |
 | 400 | `invalid_source_url` | URL source tidak absolut/invalid | Tidak |
+| 400 | `invalid_encrypted_source` | Token `es_` rusak, ditamper, atau key id tidak dikenal | Tidak |
 | 401 | `invalid_signature` | Signature salah/absen | Tidak |
 | 403 | `source_not_allowed` | Host di luar allowlist | Tidak |
 | 403 | `private_address_blocked` | Resolusi ke IP privat/metadata | Tidak |

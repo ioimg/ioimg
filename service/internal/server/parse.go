@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,6 +20,9 @@ type Target struct {
 	Signature string
 	Exp       int64
 	Kid       string
+	// SourceKeyID is the signing-key id that decrypted an es_ source. It is
+	// only exposed in a debug response header, never in the cache key.
+	SourceKeyID string
 }
 
 // parseTarget accepts both path-based and query-based requests.
@@ -34,6 +38,16 @@ func parsePathTarget(r *http.Request, p *tenant.Policy) (Target, error) {
 	idx := strings.Index(path, "https://")
 	if i := strings.Index(path, "http://"); i >= 0 && (idx < 0 || i < idx) {
 		idx = i
+	}
+	if idx < 0 {
+		// es_ sources carry no scheme, so locate the encrypted segment instead.
+		// A plain HTTP(S) source always wins above, which keeps existing URLs
+		// (including ones whose path contains "/es_") byte-for-byte compatible.
+		if strings.HasPrefix(path, "es_") {
+			idx = 0
+		} else if i := strings.Index(path, "/es_"); i >= 0 {
+			idx = i + 1
+		}
 	}
 	if idx < 0 {
 		return Target{}, errInvalidSource()
@@ -70,11 +84,16 @@ func parsePathTarget(r *http.Request, p *tenant.Policy) (Target, error) {
 	q.Del("exp")
 	q.Del("kid")
 	q.Del("sig")
-	if enc := q.Encode(); enc != "" {
-		if strings.Contains(source, "?") {
-			source += "&" + enc
-		} else {
-			source += "?" + enc
+	// An es_ token is the whole source; its plaintext query string was sealed
+	// by the token creator. Append only for plain sources so exp/sig handled
+	// above cannot corrupt the ciphertext.
+	if !strings.HasPrefix(source, "es_") {
+		if enc := q.Encode(); enc != "" {
+			if strings.Contains(source, "?") {
+				source += "&" + enc
+			} else {
+				source += "?" + enc
+			}
 		}
 	}
 	return finishTarget(opsRaw, source, sig, exp, kid, p)
@@ -111,6 +130,26 @@ func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, p *tenan
 	if err != nil {
 		return Target{}, errInvalidOps(err.Error())
 	}
+	sourceKeyID := ""
+	if strings.HasPrefix(rawSource, "es_") {
+		if p.SourceCipher == nil {
+			return Target{}, errEncryptedSource("encrypted source requires IOIMG_SIGNING_KEYS")
+		}
+		plain, usedKey, derr := p.SourceCipher.Decrypt(rawSource)
+		if derr != nil {
+			switch {
+			case errors.Is(derr, sign.ErrUnknownSourceKey):
+				return Target{}, errEncryptedSource(derr.Error())
+			case errors.Is(derr, sign.ErrNoSourceKeys):
+				return Target{}, errEncryptedSource("encrypted source requires IOIMG_SIGNING_KEYS")
+			default:
+				return Target{}, errEncryptedSource("encrypted source is invalid or has been tampered with")
+			}
+		}
+		// The decrypted URL is deliberately not trusted: it goes through the
+		// same canonicalisation and allowlist checks as a plain source below.
+		rawSource, sourceKeyID = plain, usedKey
+	}
 	source, err := sign.CanonicalSource(rawSource)
 	if err != nil {
 		return Target{}, errInvalidSource()
@@ -139,5 +178,5 @@ func finishTarget(opsRaw, rawSource, sig string, exp int64, kid string, p *tenan
 			}
 		}
 	}
-	return Target{Ops: o, Canonical: o.Canonical(), Source: source, Signature: sig, Exp: exp, Kid: kid}, nil
+	return Target{Ops: o, Canonical: o.Canonical(), Source: source, Signature: sig, Exp: exp, Kid: kid, SourceKeyID: sourceKeyID}, nil
 }

@@ -20,6 +20,9 @@ ioimg adalah service yang **mengambil URL dari internet lalu men-decode file bin
 | T10 | Supply chain | Penyerang | Backdoor | `cargo-deny`, `cargo-audit`, lockfile, build reproducible, SBOM |
 | T11 | Container escape via io_uring | Penyerang | Host compromise | io_uring opsional & dimatikan di lingkungan multi-tenant tak tepercaya; seccomp; patch kernel |
 | T12 | Log injection / PII di log | Internal | Kebocoran URL privat | Redaksi query sensitif, sampling, retensi terbatas |
+| T13 | URL sumber membocorkan origin privat | Penyadap log/CDN | Kebocoran aset/tenant | `es_` AES-256-GCM, key dari HKDF signing secret, allowlist tetap berlaku |
+| T14 | Kredensial upstream bocor ke host lain/log | Penyalahguna redirect | Kredensial origin dicuri | `IOIMG_SOURCE_AUTH` exact-host, strip saat redirect lintas host, tidak pernah di-log |
+| T15 | Request/response header injection | Penyerang | Splitting/poisoning | Allowlist header + validasi CR/LF/ukuran + validasi token RFC 7230 |
 
 Asumsi: penyerang dapat mengirim request HTTP sembarang ke endpoint publik dan dapat mengontrol isi gambar (bila punya akun/free tier).
 
@@ -114,6 +117,54 @@ Kebijakan: **prefer Rust decoder**; jika memakai C/C++ (libwebp, libavif), jalan
 - `project_id` masuk cache key & path L2 (opsional subdir untuk attachment).
 - Admin API memfilter by organization; tidak ada endpoint lintas-tenant.
 - Quota & rate limit per project, dienforce di data plane dengan state lokal (eventually consistent lintas node).
+
+### 5.4 Kerahasiaan sumber, kredensial upstream, dan header
+
+Semua fitur di bawah **default off**; tanpa konfigurasi, perilaku dan output
+tidak berubah.
+
+**Source terenkripsi (`es_`).** URL sumber dapat diganti token `es_` berisi
+ciphertext AES-256-GCM (base64url) sehingga URL tidak membocorkan origin. Kunci
+32 byte diturunkan dengan HKDF-SHA256 dari setiap secret `IOIMG_SIGNING_KEYS`
+dengan info `ioimg-source-enc-v1`; AES-GCM memberi autentikasi sehingga
+ciphertext yang ditamper ditolak. Rotasi didukung: server mencoba semua key yang
+dikonfigurasi dan menolak key id tak dikenal dengan `400
+invalid_encrypted_source`. Key id pemenang hanya muncul di header
+`X-IOIMG-Source-Key` dan log debug saat `IOIMG_LOG_LEVEL=debug`. Batas: token
+tidak menyembunyikan URL dari operator/CDN yang melihat plaintext setelah
+dekripsi, dan URL hasil dekripsi **selalu** melewati kanonisasi, allowlist, dan
+guard SSRF yang sama — enkripsi bukan bypass. Plaintext token tetap harus
+ditandatangani bila `IOIMG_SIGNED_ONLY=true`; signature menandatangani URL
+hasil dekripsi.
+
+**`IOIMG_SOURCE_AUTH`.** Daftar `host=Header:Value` (comma separated) untuk
+authorization upstream. Pencocokan **exact host** saja: tidak ada wildcard,
+suffix, atau port matching. Value boleh mengandung spasi dan titik dua setelah
+titik dua pertama. Header hanya dikirim ke host tersebut, tidak pernah ke host
+lain saat redirect, tidak di-log, dan tidak pernah muncul di body error. Batas:
+satu header per host; value yang mengandung koma tidak dapat ditulis (pemisah
+entry), dan secret tetap terlihat oleh proses/secret manager operator.
+
+**`IOIMG_PASSTHROUGH_HEADERS`.** Daftar nama header request yang diteruskan ke
+upstream. Nilai hanya diteruskan bila tidak mengandung CR/LF dan panjangnya
+≤ 1 KiB; nilai yang gagal validasi di-drop, bukan menggagalkan request.
+`Authorization` dan `Cookie` hanya diteruskan bila **secara eksplisit** ada di
+daftar. Semua header yang diteruskan dihapus saat redirect ke host berbeda.
+Batas: header hop-by-hop/framing (`Host`, `Content-Length`, `Transfer-Encoding`,
+`Connection`, `Upgrade`, `TE`, `Trailer`, `Proxy-Connection`) ditolak saat
+startup; pass-through tidak menggantikan `IOIMG_SOURCE_AUTH`.
+
+**`IOIMG_RESPONSE_HEADERS`.** Daftar `Name:Value` yang ditambahkan ke respons
+gambar. Nama divalidasi sebagai token RFC 7230; value dengan CR/LF (atau NUL)
+ditolak saat startup, sehingga header splitting/injection tidak mungkin.
+Header bawaan (`Content-Type`, `Content-Length`, `ETag`, dan seterusnya) menang
+bila namanya sama. Batas: hanya respons gambar sukses; respons error tidak
+mendapat header kustom.
+
+**Cookie pass-through tidak didukung** dan sengaja tidak ditambahkan. Cookie
+sering berisi sesi pengguna; meneruskannya ke origin pihak ketiga memperluas
+permukaan kebocoran tanpa kebutuhan yang jelas. Gunakan `IOIMG_SOURCE_AUTH`
+untuk kredensial upstream yang memang diperlukan.
 
 ## 6. Abuse control
 

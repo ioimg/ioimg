@@ -24,6 +24,10 @@ func errInvalidSource() *HTTPError {
 	return &HTTPError{Status: http.StatusBadRequest, Code: "invalid_source_url", Message: "source must be an absolute http(s) URL"}
 }
 
+func errEncryptedSource(msg string) *HTTPError {
+	return &HTTPError{Status: http.StatusBadRequest, Code: "invalid_encrypted_source", Message: msg}
+}
+
 func errProjectNotFound() *HTTPError {
 	return &HTTPError{Status: http.StatusNotFound, Code: "project_not_found", Message: "no project is configured for this host"}
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ioimg/ioimg/service/internal/source"
 	"github.com/ioimg/ioimg/service/pkg/ops"
 	"github.com/ioimg/ioimg/service/pkg/sign"
 )
@@ -39,6 +40,14 @@ type Config struct {
 	// and resolution guards but are still buffered in memory.
 	SourceRawMaxBytes int64
 	SourceUserAgent   string
+	// SourceAuth maps an exact host to one upstream authorization header. It is
+	// applied only for that host and never sent across a cross-host redirect.
+	SourceAuth map[string]source.Auth
+	// PassthroughHeaders lists request headers copied to the upstream.
+	PassthroughHeaders []string
+	// ResponseHeaders are added to successful image responses. Names are RFC
+	// 7230 tokens; CR/LF in values is rejected at startup.
+	ResponseHeaders []ResponseHeader
 	// WatermarkURL is the default watermark image used by wm_ when the request
 	// does not supply wmu_ (imgproxy's IMGPROXY_WATERMARK_URL).
 	WatermarkURL string
@@ -64,6 +73,12 @@ type Config struct {
 
 	DisableAVIF bool
 	DisableWebP bool
+}
+
+// ResponseHeader is one configured custom response header.
+type ResponseHeader struct {
+	Name  string
+	Value string
 }
 
 // L2Config configures the shared S3-compatible cache.
@@ -217,6 +232,22 @@ func Load() (Config, error) {
 			return c, fmt.Errorf("IOIMG_L2_TIMEOUT must be positive")
 		}
 	}
+	sourceAuth, err := parseSourceAuth(os.Getenv("IOIMG_SOURCE_AUTH"))
+	if err != nil {
+		return c, err
+	}
+	c.SourceAuth = sourceAuth
+	passthrough, err := parsePassthroughHeaders(os.Getenv("IOIMG_PASSTHROUGH_HEADERS"))
+	if err != nil {
+		return c, err
+	}
+	c.PassthroughHeaders = passthrough
+	responseHeaders, err := parseResponseHeaders(os.Getenv("IOIMG_RESPONSE_HEADERS"))
+	if err != nil {
+		return c, err
+	}
+	c.ResponseHeaders = responseHeaders
+
 	c.ControlURL = strings.TrimRight(env("IOIMG_CONTROL_URL", ""), "/")
 	c.ControlToken = os.Getenv("IOIMG_CONTROL_TOKEN")
 	c.ControlSync = envDuration("IOIMG_CONTROL_SYNC", 30*time.Second)
@@ -308,6 +339,174 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// parseSourceAuth parses "host=Header:Value[,host2=Header:Value]". Values may
+// contain spaces and colons after the first colon. Errors never echo the value,
+// because it usually is a credential.
+func parseSourceAuth(raw string) (map[string]source.Auth, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	out := make(map[string]source.Auth)
+	for i, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		eq := strings.IndexByte(entry, '=')
+		if eq <= 0 {
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d must be host=Header:Value", i+1)
+		}
+		host := normalizeHostEntry(entry[:eq])
+		if err := validateAuthHost(host); err != nil {
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d: %w", i+1, err)
+		}
+		name, value, ok := strings.Cut(entry[eq+1:], ":")
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if !ok {
+			// Do not echo anything after '=' here: a malformed entry often has
+			// the credential where the header name should be.
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d must be host=Header:Value", i+1)
+		}
+		if !validHeaderName(name) {
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d: header name is not an RFC 7230 token", i+1)
+		}
+		if value == "" {
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d: header %q has an empty value", i+1, name)
+		}
+		if err := validForwardValue(value); err != nil {
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d: header %q %v", i+1, name, err)
+		}
+		if _, dup := out[host]; dup {
+			return nil, fmt.Errorf("IOIMG_SOURCE_AUTH entry %d: host %q is configured more than once", i+1, host)
+		}
+		out[host] = source.Auth{Name: name, Value: value}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// parsePassthroughHeaders validates the request header allowlist. Authorization
+// and Cookie are only forwarded when explicitly listed here.
+func parsePassthroughHeaders(raw string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range splitList(raw) {
+		if !validHeaderName(name) {
+			return nil, fmt.Errorf("IOIMG_PASSTHROUGH_HEADERS: %q is not an RFC 7230 header name", name)
+		}
+		canonical := httpCanonicalHeader(name)
+		switch strings.ToLower(canonical) {
+		case "host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "proxy-connection":
+			return nil, fmt.Errorf("IOIMG_PASSTHROUGH_HEADERS: %q is a hop-by-hop or framing header and cannot be forwarded", canonical)
+		}
+		if !seen[canonical] {
+			seen[canonical] = true
+			out = append(out, canonical)
+		}
+	}
+	return out, nil
+}
+
+// parseResponseHeaders parses "Name:Value[,Name2:Value2]". Header names must be
+// RFC 7230 tokens and values may not contain CR/LF, which would allow response
+// splitting.
+func parseResponseHeaders(raw string) ([]ResponseHeader, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var out []ResponseHeader
+	for i, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(entry, ":")
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if !ok || !validHeaderName(name) {
+			return nil, fmt.Errorf("IOIMG_RESPONSE_HEADERS entry %d: header name %q is not an RFC 7230 token", i+1, name)
+		}
+		if err := validForwardValue(value); err != nil {
+			return nil, fmt.Errorf("IOIMG_RESPONSE_HEADERS entry %d: header %q %v", i+1, name, err)
+		}
+		out = append(out, ResponseHeader{Name: name, Value: value})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func normalizeHostEntry(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+}
+
+func validateAuthHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("host is empty")
+	}
+	if strings.ContainsAny(host, "* /@:") {
+		return fmt.Errorf("host %q must be an exact host name without wildcard, scheme, port or path", host)
+	}
+	return nil
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r > 127 || !isTokenChar(byte(r)) {
+			return false
+		}
+	}
+	return true
+}
+
+// isTokenChar implements RFC 7230 tchar.
+func isTokenChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	}
+	return false
+}
+
+func validForwardValue(value string) error {
+	if len(value) > 8192 {
+		return fmt.Errorf("value exceeds 8192 bytes")
+	}
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return fmt.Errorf("value contains a forbidden control character")
+	}
+	return nil
+}
+
+// httpCanonicalHeader mirrors textproto.CanonicalMIMEHeaderKey without pulling
+// net/http into configuration parsing.
+func httpCanonicalHeader(name string) string {
+	upper := true
+	b := []byte(name)
+	for i, c := range b {
+		if upper && c >= 'a' && c <= 'z' {
+			b[i] = c - ('a' - 'A')
+		} else if !upper && c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+		upper = c == '-'
+	}
+	return string(b)
 }
 
 func splitList(raw string) []string {
