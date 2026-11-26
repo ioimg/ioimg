@@ -80,3 +80,39 @@ yang sama diulang di mesin yang sama:
 
 Catatan: angka "sesudah" memakai zlib-ng lewat `LD_LIBRARY_PATH` di mesin uji
 (glibc), bukan image Alpine — lihat §8 dokumen di atas untuk selisihnya.
+
+## Hasil final: image produksi (`ioimg:vips-prod`) vs imgproxy
+
+Kedua server dijalankan sebagai container di mesin yang sama, `--network host`,
+`--cpus=2` (setara c7i.large 2 vCPU), origin nginx lokal, DIV2K, `fit 512x512`,
+cache dimatikan di kedua sisi, loadgen 2 koneksi selama 10 s, semua request
+cache-MISS (sumber diberi `?i=N` unik). imgproxy memakai setelan benchmark
+mereka sendiri: `IMGPROXY_JPEG_PROGRESSIVE=1`, `IMGPROXY_AVIF_SPEED=9`.
+
+| Format | ioimg 2 core | ioimg tanpa limit | imgproxy 2 core | Rasio | p50 ioimg / imgproxy |
+| --- | --- | --- | --- | --- | --- |
+| JPEG q80 | 131,6 | 135,0 | 141,3 | 0,93x | 14,8 / 13,8 ms |
+| PNG (default) | **50,8** | 46,4 | 27,7 | **1,83x** | 38,7 / 72,7 ms |
+| WebP q75 | **41,7** | 49,0 | 33,4 | **1,25x** | 45,5 / 59,8 ms |
+| AVIF q65 effort 2 | **22,6** | 19,2 | 17,3 | **1,31x** | 87,8 / 104,5 ms |
+
+Ukuran output, satu gambar yang sama, kualitas sama:
+
+| Format | ioimg | imgproxy | Selisih |
+| --- | --- | --- | --- |
+| JPEG q80 | 55.394 B | 51.715 B | +7,1% (mereka progressive) |
+| PNG | 384.065 B | 384.257 B | -0,05% |
+| WebP q75 | 43.256 B | 43.468 B | -0,5% |
+| AVIF q65 | 37.263 B | 37.795 B | -1,4% |
+
+Catatan pembacaan:
+
+- JPEG satu-satunya format di mana imgproxy lebih cepat (7%), dan itu bukan
+  gap mesin gambar: selisihnya sejalan dengan progressive encoding yang mereka
+  nyalakan secara default. `IOIMG_JPEG_PROGRESSIVE=1` menukar -7% byte dengan
+  -20% throughput (lihat `pinning-and-zlib-ng.md` §6).
+- PNG/WebP/AVIF "tanpa limit" tidak lebih tinggi dari 2 core karena pipeline
+  transform memang hanya memakai ~1,4 core per request (lihat §2 dokumen di
+  atas); sisa core dipakai request lain, bukan satu request.
+- Variasi antar-run di laptop ini 5-10% karena thermal, jadi angka 2 core
+  dibaca sebagai rentang (PNG 46-51, WebP 41-49, AVIF 19-23).
