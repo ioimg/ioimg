@@ -227,3 +227,59 @@ Kesimpulan:
   ketersediaan** (io_uring diblok total), bukan sebagai jalur performa. Kalau
   throughput yang dicari, tambah replika/container dengan celeris, bukan
   prefork.
+
+## 7. Re-run 2026-11-26 (setelah gate concurrency + kuota lifetime)
+
+Benchmark diulang setelah tiga perubahan: gate concurrency per proyek
+(`projectGate`, di jalur miss saja), kuota berbasis counter lifetime, dan
+penghapusan `poc/` (client Rust lama ikut hilang). Karena itu harness-nya
+dibangun ulang: client Go dengan request yang dibangun sekali per thread
+(`bench/loadgen`, buffer 64 KiB, keep-alive) dan sumber sintetis 2400×1600
+(`bench/genimg`), cache tetap di ext4 `~/.cache/ioimg-benchcache`.
+
+Metodologi: 8 koneksi keep-alive, 3 s per putaran, 3–4 putaran, median. Mesin
+dipakai bersama proses lain (load average 1,7–7 sepanjang sesi), jadi **angka
+absolut tidak bisa dibandingkan dengan §5/§6** — yang stabil adalah urutan dan
+rasio.
+
+### 7.1 Satu server, mesin tanpa kontensi (HIT 17.751 B)
+
+| Konfigurasi | RPS (3 putaran) | p50 | p99 |
+| --- | --- | --- | --- |
+| celeris `io_uring` 1 proses | 79.703 / 75.036 / 74.894 | 84–90 µs | 364–391 µs |
+
+Median 75,0k — sama dengan 79,2k di §6 (selisihnya kontensi sesi, bukan
+regresi). Gate concurrency tidak menambah biaya: `ioimg_concurrency_rejected_total 0`
+dan HIT tidak pernah melewati gate.
+
+### 7.2 Empat transport berdampingan (interleaved, 4 putaran)
+
+Keempat server hidup bersamaan di port berbeda, diukur bergantian supaya drift
+mesin saling meniadakan — jadi angka di sini **lebih rendah** dari 7.1 karena
+saling berebut CPU, dan perbandingannya yang bermakna:
+
+| Transport | RPS (median) | p50 | Rasio vs `net/http` |
+| --- | --- | --- | --- |
+| celeris `io_uring` 1 proses | **56.304** | 119 µs | **1,72×** |
+| Fiber v3 prefork 16 | 52.024 | 130 µs | 1,59× |
+| Fiber v3 1 proses | 47.475 | 156 µs | 1,45× |
+| `net/http` | 32.812 | 200 µs | 1,00× |
+
+Prefork tetap di bawah satu proses celeris (+9,5% di atas Fiber satu proses,
+bukan 1,8× seperti klaim lama). Konsisten dengan §6.
+
+### 7.3 Cache MISS (vips, 1 thread, 8 s, sumber 853 KB)
+
+| Opsi | RPS | ms/gambar |
+| --- | --- | --- |
+| `w_400,f_jpg,q_80` (`c_fit`) | 59 | 14,0 |
+| `w_800,c_fill,f_jpg,q_80` | 40 | 21,6 |
+| `w_400,f_jpg,q_80,dt_…` (duotone) | 39 | 22,6 |
+| `w_400,f_webp,q_80,webpo_6` | 24 | 37,1 |
+| `w_400,f_avif,q_50` | 5 | 184,0 |
+
+Dua catatan yang tetap berlaku: **`c_fill` masih jalan tanpa shrink-on-load**
+(21,6 ms vs 14,0 ms untuk lebar yang sama), dan efek per-piksel (`dt`) menambah
+~8 ms karena memaksa round-trip `vips.ImageRef` → `image.Image`. Angka absolut
+tidak sebanding dengan tabel MISS sebelumnya (sumber 853 KB vs 373 KB, mesin
+lebih ramai).
