@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 // plane in batches. Reporting is best-effort: failed batches are merged back.
 type usage struct {
 	mu sync.Mutex
+	// replicaID and seq mint report IDs. Without them every report carried an
+	// empty id, the control plane's usage_reports primary key rejected all but
+	// the first one as a replay, and quota/invoices never saw the rest.
+	replicaID string
+	seq       uint64
 	// pending is what has not been acknowledged by the control plane yet. It is
 	// keyed per project and lease so a report can carry the reservation it spent
 	// from without mixing leases together.
@@ -28,10 +34,11 @@ type usageKey struct {
 	leaseID   string
 }
 
-func newUsage() *usage {
+func newUsage(replicaID string) *usage {
 	return &usage{
-		pending: map[usageKey]*tenant.UsageReport{},
-		total:   map[string]*tenant.UsageReport{},
+		replicaID: replicaID,
+		pending:   map[usageKey]*tenant.UsageReport{},
+		total:     map[string]*tenant.UsageReport{},
 	}
 }
 
@@ -46,6 +53,11 @@ func (u *usage) add(projectID, leaseID string, transforms, bytesIn, bytesOut int
 	if r == nil {
 		r = &tenant.UsageReport{ProjectID: projectID, LeaseID: leaseID}
 		u.pending[key] = r
+	} else if r.ID != "" {
+		// A batch that already has an id was flushed and rejected; start a new
+		// batch instead of growing the old one under the same id, or the retry
+		// would be dropped as a replay and lose these events.
+		r.ID = ""
 	}
 	r.Transforms += transforms
 	r.BytesIn += bytesIn
@@ -79,7 +91,13 @@ func (u *usage) take() []tenant.UsageReport {
 	}
 	out := make([]tenant.UsageReport, 0, len(u.pending))
 	for _, r := range u.pending {
-		out = append(out, *r)
+		cp := *r
+		if cp.ID == "" {
+			u.seq++
+			cp.ID = u.replicaID + "-" + strconv.FormatUint(u.seq, 10)
+		}
+		*r = cp
+		out = append(out, cp)
 	}
 	u.pending = map[usageKey]*tenant.UsageReport{}
 	return out
@@ -92,8 +110,10 @@ func (u *usage) mergeBack(reports []tenant.UsageReport) {
 		key := usageKey{projectID: r.ProjectID, leaseID: r.LeaseID}
 		p := u.pending[key]
 		if p == nil {
-			p = &tenant.UsageReport{ProjectID: r.ProjectID, LeaseID: r.LeaseID}
+			p = &tenant.UsageReport{ProjectID: r.ProjectID, LeaseID: r.LeaseID, ID: r.ID}
 			u.pending[key] = p
+		} else if p.ID == "" {
+			p.ID = r.ID
 		}
 		p.Transforms += r.Transforms
 		p.BytesIn += r.BytesIn

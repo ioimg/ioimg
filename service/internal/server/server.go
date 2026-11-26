@@ -153,14 +153,14 @@ func New(cfg config.Config, o Options) (*Server, error) {
 		s.purgers = buildPurgers(cfg.CDN)
 	}
 	s.jobs = newJobStore(100)
-	s.usage = newUsage()
-	s.leases = newLeaseBudget()
-	s.watermarks = &watermarkCache{}
 	s.projectHeader = cfg.ProjectHeader
 	s.replicaID = cfg.ReplicaID
 	if s.replicaID == "" {
 		s.replicaID = defaultReplicaID()
 	}
+	s.usage = newUsage(s.replicaID)
+	s.leases = newLeaseBudget()
+	s.watermarks = &watermarkCache{}
 	s.allowProjectHeader = cfg.AllowProjectHeader
 	s.defaultPolicy = buildDefaultPolicy(cfg)
 	s.tenants = tenant.NewStore(s.defaultPolicy)
@@ -338,7 +338,20 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reservation := s.acquireQuota(policy)
+	if !reservation.allowed && reservation.needLease {
+		// Out of lease units: wait for one control-plane grant instead of
+		// failing the request that happens to arrive first.
+		reservation = s.ensureLease(policy, reservation)
+	}
 	if !reservation.allowed {
+		if s.leases != nil {
+			id, amount, unspent, expires, refreshing := s.leases.debugState(policy.ID)
+			s.log.Warn("quota refused", "project", policy.ID, "limit", policy.MonthlyLimit,
+				"snapshot_used", policy.Usage.Transforms, "local_used", s.usage.totalFor(policy.ID),
+				"lease_id", id, "lease_amount", amount, "lease_unspent", unspent,
+				"lease_expires_in", time.Until(expires).String(), "lease_refreshing", refreshing, "lease_refresh_age", s.leases.refreshAge(policy.ID),
+				"need_lease", reservation.needLease, "need_refresh", reservation.needRefresh)
+		}
 		if reservation.remaining >= 0 {
 			w.Header().Set("X-IOIMG-Quota-Remaining", "0")
 		}

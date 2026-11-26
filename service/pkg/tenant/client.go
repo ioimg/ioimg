@@ -63,6 +63,9 @@ func (c *Client) FetchSnapshot(ctx context.Context, since int64) (snap *Snapshot
 // UsageReport is one project's counters since the last report. LeaseID is the
 // reservation the transforms were spent from; empty keeps old payloads valid.
 type UsageReport struct {
+	// ID makes a report idempotent: the control plane records it and ignores a
+	// replay. It must be unique per batch and reused when a batch is retried.
+	ID         string `json:"id,omitempty"`
 	ProjectID  string `json:"projectId"`
 	Transforms int64  `json:"transforms"`
 	BytesIn    int64  `json:"bytesIn"`

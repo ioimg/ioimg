@@ -10,7 +10,7 @@ import (
 // only as fresh as its last revision, so "pending is empty" cannot mean "no
 // usage". This is the bug a purely pending-based check hides.
 func TestQuotaSurvivesFlush(t *testing.T) {
-	s := &Server{usage: newUsage()}
+	s := &Server{usage: newUsage("test-replica")}
 	p := &tenant.Policy{ID: "p", MonthlyLimit: 10}
 
 	for i := 0; i < 4; i++ {
@@ -32,7 +32,7 @@ func TestQuotaSurvivesFlush(t *testing.T) {
 // The control plane's aggregate covers other replicas, so it wins when it is
 // larger than this process' own count.
 func TestQuotaUsesSnapshotWhenLarger(t *testing.T) {
-	s := &Server{usage: newUsage()}
+	s := &Server{usage: newUsage("test-replica")}
 	s.countUsage("p", 1)
 	p := &tenant.Policy{ID: "p", MonthlyLimit: 100, Usage: tenant.Usage{Transforms: 90}}
 	if got := s.quotaRemaining(p); got != 10 {
@@ -48,7 +48,7 @@ func TestQuotaUsesSnapshotWhenLarger(t *testing.T) {
 }
 
 func TestQuotaUnlimitedAndExhausted(t *testing.T) {
-	s := &Server{usage: newUsage()}
+	s := &Server{usage: newUsage("test-replica")}
 	if got := s.quotaRemaining(&tenant.Policy{ID: "p"}); got != -1 {
 		t.Fatalf("want unlimited (-1), got %d", got)
 	}
@@ -62,5 +62,41 @@ func TestQuotaUnlimitedAndExhausted(t *testing.T) {
 	s.countUsage("", 1)
 	if got := s.usage.totalFor(""); got != 0 {
 		t.Fatalf("empty project must not be counted, got %d", got)
+	}
+}
+
+// A usage report needs an id: the control plane deduplicates on it, so an empty
+// id made every batch after the first look like a replay and silently dropped
+// quota consumption (found in the multi-replica run: 238 transforms accepted,
+// 1 counted).
+func TestUsageReportIDsAreUniqueAndStableOnRetry(t *testing.T) {
+	u := newUsage("replica-a")
+	u.add("p1", "lease-1", 3, 0, 100)
+
+	first := u.take()
+	if len(first) != 1 || first[0].ID == "" {
+		t.Fatalf("first take = %+v, want one report with an id", first)
+	}
+	if first[0].Transforms != 3 {
+		t.Fatalf("transforms = %d, want 3", first[0].Transforms)
+	}
+
+	// The rejected batch is merged back and retried: the id must survive, so a
+	// retry the control plane already accepted is deduplicated instead of
+	// double counted.
+	u.mergeBack(first)
+	retry := u.take()
+	if len(retry) != 1 || retry[0].ID != first[0].ID {
+		t.Fatalf("retry = %+v, want the same id %q", retry, first[0].ID)
+	}
+
+	// A new event after the retry must not hide behind the old id.
+	u.add("p1", "lease-1", 1, 0, 10)
+	next := u.take()
+	if len(next) != 1 || next[0].ID == first[0].ID {
+		t.Fatalf("next batch = %+v, want a fresh id", next)
+	}
+	if next[0].Transforms != 1 {
+		t.Fatalf("next transforms = %d, want only the new event", next[0].Transforms)
 	}
 }

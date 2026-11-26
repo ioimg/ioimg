@@ -52,3 +52,29 @@ func TestCelerisSmallBodyUsesBlob(t *testing.T) {
 		t.Fatalf("body = %q, want %q", rec.BodyString(), "ok")
 	}
 }
+
+// The project header picks the tenant, so a transport that forwards only a
+// hand-picked set of headers silently disables per-project routing. This pins
+// the full copy: an arbitrary header, a header the adapter used to special-case,
+// and a repeated header must all survive.
+func TestCelerisForwardsAllRequestHeaders(t *testing.T) {
+	c, _ := celeristest.NewContextT(t, http.MethodGet, "/healthz",
+		celeristest.WithHeader("X-IOIMG-Project", "p_demo"),
+		celeristest.WithHeader("Accept", "image/avif"),
+		celeristest.WithHeader("Range", "bytes=0-99"),
+		celeristest.WithHeader("X-Forwarded-For", "203.0.113.7"),
+	)
+	defer celeristest.ReleaseContext(c)
+
+	hdr := celerisHeaders(c)
+	for name, want := range map[string]string{
+		"X-IOIMG-Project": "p_demo",
+		"Accept":          "image/avif",
+		"Range":           "bytes=0-99",
+		"X-Forwarded-For": "203.0.113.7",
+	} {
+		if got := hdr.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}

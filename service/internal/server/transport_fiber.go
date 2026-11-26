@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/valyala/fasthttp"
 )
 
 type fiberWriter struct {
@@ -51,19 +52,22 @@ func (w *fiberWriter) Write(b []byte) (int, error) {
 	return w.c.Write(b)
 }
 
+// fiberHeaders copies every request header. See celerisHeaders for why the
+// hand-picked subset was wrong: the project header, pass-through headers, and
+// X-Forwarded-* must reach the handler or those features are silently dead on
+// this transport.
+func fiberHeaders(req *fasthttp.Request) http.Header {
+	hdr := make(http.Header, 16)
+	req.Header.VisitAll(func(k, v []byte) {
+		hdr.Add(string(k), string(v))
+	})
+	return hdr
+}
+
 // FiberHandler serves the data plane through Fiber.
 func (s *Server) FiberHandler(c fiber.Ctx) error {
 	req := c.Request()
-	hdr := make(http.Header, 4)
-	if v := req.Header.Peek("Accept"); len(v) > 0 {
-		hdr.Set("Accept", string(v))
-	}
-	if v := req.Header.Peek("If-None-Match"); len(v) > 0 {
-		hdr.Set("If-None-Match", string(v))
-	}
-	if v := req.Header.Peek("X-Request-Id"); len(v) > 0 {
-		hdr.Set("X-Request-Id", string(v))
-	}
+	hdr := fiberHeaders(req)
 	raw := string(req.Header.RequestURI())
 	path, query := raw, ""
 	if i := strings.IndexByte(raw, '?'); i >= 0 {

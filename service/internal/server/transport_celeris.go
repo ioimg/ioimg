@@ -115,18 +115,25 @@ func (w *celerisWriter) flush() {
 	_ = sw.Close()
 }
 
+// celerisHeaders copies every request header into an http.Header. Copying only
+// a hand-picked few is not enough: the project header (IOIMG_PROJECT_HEADER),
+// client pass-through headers (IOIMG_PASSTHROUGH_HEADERS), cookies, Range, and
+// X-Forwarded-* all decide which tenant, policy, and client IP a request gets,
+// and a silently missing header makes those features look enabled while they
+// are not. celeris normalises header names to lowercase, and http.Header
+// canonicalises on Set/Add, so the map still answers Header.Get.
+func celerisHeaders(c *celeris.Context) http.Header {
+	raw := c.RequestHeaders()
+	hdr := make(http.Header, len(raw))
+	for _, kv := range raw {
+		hdr.Add(kv[0], kv[1])
+	}
+	return hdr
+}
+
 // CelerisHandler serves the data plane through celeris.
 func (s *Server) CelerisHandler(c *celeris.Context) error {
-	hdr := make(http.Header, 4)
-	if v := c.Header("Accept"); v != "" {
-		hdr.Set("Accept", v)
-	}
-	if v := c.Header("If-None-Match"); v != "" {
-		hdr.Set("If-None-Match", v)
-	}
-	if v := c.Header("X-Request-Id"); v != "" {
-		hdr.Set("X-Request-Id", v)
-	}
+	hdr := celerisHeaders(c)
 	r := &http.Request{
 		Method:     c.Method(),
 		Host:       c.Host(),
