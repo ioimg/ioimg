@@ -16,6 +16,7 @@
 # installed as a zlib-compatible libz.so.1, so libpng/libvips pick it up without
 # being rebuilt (measured: 53.3 ms -> 39.7 ms on a 2040x1356 source).
 ARG VIPS_VERSION=8.18.7
+ARG AOM_VERSION=3.15.3
 
 # ---------------------------------------------------------------------------
 # zlib-ng (zlib-compatible ABI)
@@ -32,6 +33,29 @@ RUN curl -fsSL "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIB_NG_V
       -DZLIB_ENABLE_TESTS=OFF -DWITH_GTEST=OFF -DCMAKE_INSTALL_PREFIX=/opt/zlib-ng && \
     cmake --build /tmp/build -j"$(nproc)" && \
     cmake --install /tmp/build
+
+# ---------------------------------------------------------------------------
+# libaom from source
+# ---------------------------------------------------------------------------
+# Debian trixie ships libaom 3.12.1, whose AV1 encoder emits an AVIF that is 32%
+# larger than the same quality/effort on libaom 3.15.3 (49205 B vs 37128 B for a
+# 512px thumbnail of a DIV2K source). The rav1e/SVT-AV1 libheif plugins are not a
+# substitute: they produced 60985 B on the same input.
+FROM debian:trixie AS aom
+ARG AOM_VERSION
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential cmake nasm yasm perl ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://aomedia.googlesource.com/aom/+archive/v${AOM_VERSION}.tar.gz" -o /tmp/aom.tar.gz \
+  && mkdir -p /tmp/aom && tar xzf /tmp/aom.tar.gz -C /tmp/aom
+RUN cmake -S /tmp/aom -B /tmp/aom-build \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/aom \
+      -DBUILD_SHARED_LIBS=ON -DENABLE_NASM=ON -DENABLE_TESTS=OFF \
+      -DENABLE_EXAMPLES=OFF -DENABLE_TOOLS=OFF -DENABLE_DOCS=OFF \
+      -DCONFIG_AV1_ENCODER=1 -DCONFIG_AV1_DECODER=1 && \
+    cmake --build /tmp/aom-build -j"$(nproc)" && \
+    cmake --install /tmp/aom-build
 
 # ---------------------------------------------------------------------------
 # libvips from source
@@ -100,12 +124,13 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && addgroup --system ioimg && adduser --system --ingroup ioimg ioimg \
   && mkdir -p /var/cache/ioimg && chown -R ioimg:ioimg /var/cache/ioimg
+COPY --from=aom /opt/aom /opt/aom
 COPY --from=vips /opt/vips /opt/vips
 COPY --from=zlibng /opt/zlib-ng /opt/zlib-ng
 COPY --from=build /out/ioimg /usr/local/bin/ioimg
 COPY --from=build /out/ioimgctl /usr/local/bin/ioimgctl
 USER ioimg
-ENV LD_LIBRARY_PATH=/opt/vips/lib:/opt/zlib-ng/lib \
+ENV LD_LIBRARY_PATH=/opt/aom/lib:/opt/vips/lib:/opt/zlib-ng/lib \
     MALLOC_ARENA_MAX=2 \
     IOIMG_ADDR=:8080 \
     IOIMG_CACHE_DIR=/var/cache/ioimg \

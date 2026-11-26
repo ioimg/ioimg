@@ -180,17 +180,43 @@ menarik dependency (libjpeg, libpng, libwebp, libheif, libjxl, orc, imagequant,
 deflate, cgif) sementara `LD_LIBRARY_PATH=/opt/vips/lib:/opt/zlib-ng/lib`
 menutupi libvips-nya. Output PNG identik byte-per-byte dengan host: 384.065 B.
 
-### Satu perbedaan yang tersisa: AVIF memakai encoder berbeda
+### AVIF: yang menentukan versi libaom, bukan encoder-nya
 
-Ukuran AVIF q65 effort 2 untuk sumber yang sama:
+Ukuran AVIF q65 effort 2 untuk sumber dan opsi yang sama (512 px, DIV2K 0801):
 
-| Lingkungan | libheif | Encoder AV1 tersedia | Ukuran |
+| Varian | Encoder AV1 | Ukuran | img/s (`--cpus=2`) |
 | --- | --- | --- | --- |
-| host Arch | 1.23.7 | aom, **rav1e**, svt-av1 | 37.128 B |
-| image debian | 1.23.6 | aom saja | **49.205 B** |
+| host Arch, libaom 3.15.3 | aom (built-in) | 37.128 B | 22 |
+| image, libaom 3.12.1 | aomenc | 49.205 B | 22 |
+| image, libaom 3.12.1 | rav1e/svtenc (tanpa aomenc) | **60.985 B** | — |
+| image, libaom 3.15.3 dari source | aomenc | **37.128 B** | 22 |
 
-Debian tidak memaketkan plugin `rav1e`/`svtenc` untuk libheif, jadi image hanya
-bisa memakai `aomenc` dan hasilnya ~32% lebih besar pada q yang sama. Kecepatan
-keduanya setara (20–22 img/s), yang berbeda hanya efisiensi kompresi. Pilihan
-berikutnya: bangun libheif dengan plugin rav1e di image, atau terima `aomenc`
-dan sesuaikan klaim ukuran AVIF di dokumen lain agar tidak memakai angka host.
+Dua kesimpulan yang bertentangan dengan dugaan awal:
+
+1. Plugin `rav1e`/`svtenc` **bukan** jawabannya. Debian memang memaketkannya
+   (`libheif-plugin-rav1e`, `libheif-plugin-svtenc`), dan setelah aomenc dilepas
+   libheif memilih rav1e — hasilnya 60.985 B, 24% lebih besar daripada aomenc.
+   Host pun tidak memakai rav1e: `/usr/lib/libheif/` di Arch tidak berisi plugin
+   aomenc sama sekali, aom-nya tertaut langsung ke libheif.
+2. Selisih 32% hilang sepenuhnya setelah libaom dibangun di versi yang sama
+   dengan host (3.15.3). Tidak ada perbedaan parameter: `Dockerfile.vips`
+   sekarang punya stage `aom` dan `LD_LIBRARY_PATH=/opt/aom/lib` di depan, dan
+   output AVIF menjadi **identik byte-per-byte** dengan host (37.128 B).
+
+### Angka akhir image produksi (`ioimg:vips-prod`)
+
+DIV2K, 2 koneksi, 8 detik, semua cache-miss:
+
+| Format | `--cpus=2` | tanpa limit | host | ukuran (image = host) |
+| --- | --- | --- | --- | --- |
+| PNG | 39–51 | 47 | 47 | 384.065 B |
+| JPEG | 134 | 134 | 149 | — |
+| WebP | 42–52 | 49 | 53 | — |
+| AVIF q65 effort 2 | 22 | 19–22 | 22 | 37.128 B |
+
+PNG pada kuota 2 core bervariasi 39–51 antar-run (laptop 15 W, thermal), jadi
+angka itu dibaca sebagai "40–50", bukan angka tunggal.
+
+Isi `Dockerfile.vips`: `zlibng` → `aom` (3.15.3) → `vips` (8.18.7, meson,
+`-Dspng=disabled`) → build Go → runtime `trixie-slim` dengan
+`LD_LIBRARY_PATH=/opt/aom/lib:/opt/vips/lib:/opt/zlib-ng/lib`.
