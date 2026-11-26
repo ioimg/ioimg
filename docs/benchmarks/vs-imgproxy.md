@@ -64,3 +64,19 @@ WebP 44,3 vs 60,3 ms; AVIF effort 1 96,6 vs 105,5 ms.
 - AVIF/WebP dengan setelan encoder yang identik (encoder berbeda implementasi).
 - Mesin produksi (server 8 core Jakarta). Rasio di atas yang dipakai untuk
   memperkirakan kapasitas, bukan angka absolut laptop.
+
+## Hasil setelah optimasi
+
+Setelah transform dipindah keluar dari core yang di-pin celeris dan zlib-ng
+dipakai (lihat [`pinning-and-zlib-ng.md`](pinning-and-zlib-ng.md)), head-to-head
+yang sama diulang di mesin yang sama:
+
+| Format | ioimg sebelum | ioimg sesudah | imgproxy | Rasio sesudah |
+| --- | --- | --- | --- | --- |
+| JPEG q80 | 135,6 | 135,0 | 137,4 | 0,98× |
+| PNG | 22,4 | **43,0** | 27,5 | **1,56×** |
+| WebP q75 | 44,2 | **49,0** | 33,2 | **1,48×** |
+| AVIF q65 | 11,8 (effort 3) | **22,0–24,0** (effort 2) | 16,9 | **1,30–1,42×** |
+
+Catatan: angka "sesudah" memakai zlib-ng lewat `LD_LIBRARY_PATH` di mesin uji
+(glibc), bukan image Alpine — lihat §8 dokumen di atas untuk selisihnya.

@@ -659,9 +659,11 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 }
 
 // avifEffortLevel is libheif's effort knob (0..9). libaom is pathologically
-// slow above 3 in libvips 8.18 (measured: effort 4 = 170 ms, effort 3 = 40 ms,
-// effort 2 = 22 ms for a 400px AVIF, with only 0.2% size difference between 3
-// and 4), so the default is 3 rather than libvips' own 4.
+// slow above 3 in libvips 8.18 (measured on a 400px image: effort 4 = 173 ms,
+// effort 3 = 40 ms, effort 2 = 22 ms, with a 0.2% size difference between 3 and
+// 4), so the default is 2 rather than libvips' own 4. On a DIV2K corpus (512px
+// fit, AVIF source) effort 2 serves 22 images/s at 37.1 kB, effort 3 14 images/s
+// and effort 1 26 images/s at 36.8 kB.
 var (
 	avifEffortOnce sync.Once
 	avifEffort     int
@@ -669,7 +671,7 @@ var (
 
 func avifEffortLevel() int {
 	avifEffortOnce.Do(func() {
-		avifEffort = 3
+		avifEffort = 2
 		if raw := strings.TrimSpace(os.Getenv("IOIMG_AVIF_EFFORT")); raw != "" {
 			if n, err := strconv.Atoi(raw); err == nil && n >= 0 && n <= 9 {
 				avifEffort = n
@@ -691,6 +693,9 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 		StripMetadata: true,
 		Effort:        4,
 		Speed:         8,
+	}
+	if v, err := strconv.ParseBool(os.Getenv("IOIMG_JPEG_PROGRESSIVE")); err == nil && v && format == vips.ImageTypeJPEG {
+		params.Interlaced = true
 	}
 	if o.PNGEncoder != nil && o.PNGEncoder.Interlaced != nil {
 		params.Interlaced = *o.PNGEncoder.Interlaced

@@ -4,7 +4,6 @@ package server
 
 import (
 	"context"
-	"runtime/debug"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -224,7 +224,7 @@ type onceWriter struct {
 func (o *onceWriter) Header() http.Header         { return o.inner.Header() }
 func (o *onceWriter) WriteHeader(code int)        { o.wrote = true; o.inner.WriteHeader(code) }
 func (o *onceWriter) Write(b []byte) (int, error) { o.wrote = true; return o.inner.Write(b) }
-func (o *onceWriter) Written() bool { return o.wrote }
+func (o *onceWriter) Written() bool               { return o.wrote }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -516,7 +516,7 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	}
 
 	procStart := time.Now()
-	res, err := s.proc.Process(src.Body, t.Ops, opts)
+	res, err := runPipeline(s.proc, src.Body, t.Ops, opts)
 	if err != nil {
 		if usedFallback {
 			return nil, timings, errDecode()
@@ -529,7 +529,7 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 				s.metrics.Fallback.Add(1)
 				usedFallback = true
 				timings["fallback"] = 1
-				res, err = s.proc.Process(src.Body, t.Ops, opts)
+				res, err = runPipeline(s.proc, src.Body, t.Ops, opts)
 			}
 		}
 		if err != nil {
@@ -567,6 +567,39 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	}
 	timings["total"] = ms(total)
 	return res.Data, timings, nil
+}
+
+// runPipeline runs the image pipeline, by default on its own goroutine.
+//
+// celeris pins every event-loop worker to a single CPU core (sched_setaffinity
+// plus runtime.LockOSThread), and threads created from a pinned thread inherit
+// that one-core mask. libvips overlaps decode with encode in two threads, so a
+// transform running on a pinned worker loses that overlap: a 512px PNG from a
+// 2040x1356 source took 69 ms inline versus 51 ms on an unpinned goroutine, and
+// throughput at two connections went from 22 to 29 images/s. IOIMG_OFFLOAD=0
+// restores the inline call.
+func runPipeline(proc imaging.Processor, src []byte, o ops.Ops, opts imaging.Options) (imaging.Result, error) {
+	if offloadDisabled() {
+		return proc.Process(src, o, opts)
+	}
+	type outcome struct {
+		res imaging.Result
+		err error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		res, err := proc.Process(src, o, opts)
+		ch <- outcome{res, err}
+	}()
+	out := <-ch
+	return out.res, out.err
+}
+
+// offloadDisabled reports whether the transform must run inline on the request
+// goroutine. Kept as a function so tests can pin the behaviour.
+func offloadDisabled() bool {
+	off, err := strconv.ParseBool(os.Getenv("IOIMG_OFFLOAD"))
+	return err == nil && !off
 }
 
 func (s *Server) writeBody(w http.ResponseWriter, r *http.Request, format ops.Format, filename string, data []byte) {

@@ -2,6 +2,23 @@
 
 # Native libvips build. Larger and requires cgo, but 3-5x faster transforms
 # than the portable pure-Go/WASM image in Dockerfile.
+
+# zlib-ng first: PNG decoding is ~88% of the cost of a PNG request and zlib-ng
+# inflates roughly 1.4x faster than stock zlib at the same ABI. Measured on a
+# 2040x1356 source: 53.3 ms -> 39.7 ms, output 389105 B -> 384065 B. It is
+# installed as a zlib-compatible libz.so.1 so libpng/libvips pick it up without
+# being rebuilt. See docs/benchmarks/pinning-and-zlib-ng.md.
+FROM golang:1.27-alpine AS zlibng
+ARG ZLIB_NG_VERSION=2.3.3
+RUN apk add --no-cache build-base cmake linux-headers ninja
+RUN wget -qO- "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIB_NG_VERSION}.tar.gz" \
+    | tar xz -C /tmp && \
+    cmake -S "/tmp/zlib-ng-${ZLIB_NG_VERSION}" -B /tmp/build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DZLIB_COMPAT=ON -DBUILD_SHARED_LIBS=ON \
+      -DZLIB_ENABLE_TESTS=OFF -DWITH_GTEST=OFF -DCMAKE_INSTALL_PREFIX=/opt/zlib-ng && \
+    cmake --build /tmp/build -j"$(nproc)" && \
+    cmake --install /tmp/build
+
 FROM golang:1.27-alpine AS build
 ARG VERSION=0.1.0-dev
 RUN apk add --no-cache build-base pkgconf vips-dev vips-heif
@@ -19,10 +36,13 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata vips vips-heif && \
     addgroup -S ioimg && adduser -S -G ioimg ioimg && \
     mkdir -p /var/cache/ioimg && chown -R ioimg:ioimg /var/cache/ioimg
+COPY --from=zlibng /opt/zlib-ng/lib /opt/zlib-ng/lib
 COPY --from=build /out/ioimg /usr/local/bin/ioimg
 COPY --from=build /out/ioimgctl /usr/local/bin/ioimgctl
 USER ioimg
-ENV IOIMG_ADDR=:8080 \
+# Prepend, so libpng's libz.so.1 resolves to zlib-ng before the musl zlib.
+ENV LD_LIBRARY_PATH=/opt/zlib-ng/lib \
+    IOIMG_ADDR=:8080 \
     IOIMG_CACHE_DIR=/var/cache/ioimg \
     IOIMG_LOG_FORMAT=json
 EXPOSE 8080

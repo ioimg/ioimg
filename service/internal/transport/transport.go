@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,7 +123,7 @@ var errEngineUnavailable = errors.New("transport engine unavailable")
 // rather than in serveCeleris so a test can pin them: celeris is the default
 // transport, and an untimed one is a slowloris target.
 func celerisConfig(cfg config.Config) celeris.Config {
-	return celeris.Config{
+	c := celeris.Config{
 		Addr:               cfg.Addr,
 		Engine:             celeris.IOUring,
 		DisableMetrics:     true,
@@ -131,6 +132,12 @@ func celerisConfig(cfg config.Config) celeris.Config {
 		WriteTimeout:       writeTimeout,
 		IdleTimeout:        idleTimeout,
 	}
+	if raw := strings.TrimSpace(os.Getenv("IOIMG_CELERIS_WORKERS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			c.Workers = n
+		}
+	}
+	return c
 }
 
 func serveCeleris(ctx context.Context, srv *server.Server, cfg config.Config, log *slog.Logger) error {
