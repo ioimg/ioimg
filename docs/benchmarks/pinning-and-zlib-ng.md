@@ -154,3 +154,43 @@ dibangun sendiri** (zlib-ng + libaom/libheif), seperti milik imgproxy. Image
 Alpine sekarang tetap benar secara fungsional dan sudah memakai zlib-ng, tetapi
 bukan wadah yang tepat untuk mengejar angka di §4. Ini pekerjaan berikutnya,
 bukan klaim yang sudah selesai.
+
+## 9. Image glibc dengan libvips 8.18.7 dari source
+
+§8 menyebut versi libvips sebagai tersangka, dan setelah image glibc diuji
+tersangka itu terbukti. Urutan percobaannya:
+
+| Image | libvips | PNG, tanpa limit | PNG, `--cpus=2` | AVIF, tanpa limit |
+| --- | --- | --- | --- | --- |
+| alpine 3.21 | 8.16.x | 34 | 30 | 13 |
+| debian trixie (`libvips42t64`) | 8.16.1 | 34 | 30 | 20 |
+| debian trixie, vips 8.18.7 dari source | 8.18.7 | **47** | **51** | 20–22 |
+
+Jadi penjelasan di §8 bahwa libc (musl vs glibc) sebagai sebab utama **salah**:
+Debian glibc dengan libvips 8.16.1 memberi angka yang sama dengan Alpine
+(34 PNG), dan baru naik ke 47 setelah libvips dibangun sendiri di versi 8.18.7
+— versi yang sama dengan mesin uji. Yang benar: **versi libvips**, bukan libc,
+yang menentukan kecepatan PNG. Kuota CFS tetap berpengaruh (§8), tetapi bukan
+sebab utama.
+
+`Dockerfile.vips` sekarang: stage `zlibng`, stage `vips` (meson, `-Dspng=disabled`
+mengikuti mesin uji), stage build Go dengan `PKG_CONFIG_PATH` ke libvips sendiri,
+dan runtime `debian:trixie-slim` yang memakai paket `libvips42t64` hanya untuk
+menarik dependency (libjpeg, libpng, libwebp, libheif, libjxl, orc, imagequant,
+deflate, cgif) sementara `LD_LIBRARY_PATH=/opt/vips/lib:/opt/zlib-ng/lib`
+menutupi libvips-nya. Output PNG identik byte-per-byte dengan host: 384.065 B.
+
+### Satu perbedaan yang tersisa: AVIF memakai encoder berbeda
+
+Ukuran AVIF q65 effort 2 untuk sumber yang sama:
+
+| Lingkungan | libheif | Encoder AV1 tersedia | Ukuran |
+| --- | --- | --- | --- |
+| host Arch | 1.23.7 | aom, **rav1e**, svt-av1 | 37.128 B |
+| image debian | 1.23.6 | aom saja | **49.205 B** |
+
+Debian tidak memaketkan plugin `rav1e`/`svtenc` untuk libheif, jadi image hanya
+bisa memakai `aomenc` dan hasilnya ~32% lebih besar pada q yang sama. Kecepatan
+keduanya setara (20–22 img/s), yang berbeda hanya efisiensi kompresi. Pilihan
+berikutnya: bangun libheif dengan plugin rav1e di image, atau terima `aomenc`
+dan sesuaikan klaim ukuran AVIF di dokumen lain agar tidak memakai angka host.

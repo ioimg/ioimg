@@ -1,17 +1,31 @@
 # syntax=docker/dockerfile:1
 
-# Native libvips build. Larger and requires cgo, but 3-5x faster transforms
-# than the portable pure-Go/WASM image in Dockerfile.
+# Native libvips build on glibc (Debian trixie), with libvips compiled from
+# source at the same version the benchmarks run on.
+#
+# Why not the distro package: trixie ships libvips 8.16.1, which measured
+# 34 img/s PNG versus 47 img/s for 8.18.7 on the same host and the same
+# zlib-ng. The version (and its PNG loader wiring) matters more than
+# musl-versus-glibc; see docs/benchmarks/pinning-and-zlib-ng.md.
+#
+# Why glibc: Debian's libaom carries full x86-64 SIMD. AVIF measured 20 img/s
+# here versus 11 on Alpine.
+#
+# zlib-ng is built first: PNG decoding is most of the cost of a PNG request and
+# zlib-ng inflates roughly 1.4x faster than stock zlib at the same ABI. It is
+# installed as a zlib-compatible libz.so.1, so libpng/libvips pick it up without
+# being rebuilt (measured: 53.3 ms -> 39.7 ms on a 2040x1356 source).
+ARG VIPS_VERSION=8.18.7
 
-# zlib-ng first: PNG decoding is ~88% of the cost of a PNG request and zlib-ng
-# inflates roughly 1.4x faster than stock zlib at the same ABI. Measured on a
-# 2040x1356 source: 53.3 ms -> 39.7 ms, output 389105 B -> 384065 B. It is
-# installed as a zlib-compatible libz.so.1 so libpng/libvips pick it up without
-# being rebuilt. See docs/benchmarks/pinning-and-zlib-ng.md.
-FROM golang:1.27-alpine AS zlibng
+# ---------------------------------------------------------------------------
+# zlib-ng (zlib-compatible ABI)
+# ---------------------------------------------------------------------------
+FROM debian:trixie AS zlibng
 ARG ZLIB_NG_VERSION=2.3.3
-RUN apk add --no-cache build-base cmake linux-headers ninja
-RUN wget -qO- "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIB_NG_VERSION}.tar.gz" \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential cmake ninja-build ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIB_NG_VERSION}.tar.gz" \
     | tar xz -C /tmp && \
     cmake -S "/tmp/zlib-ng-${ZLIB_NG_VERSION}" -B /tmp/build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release -DZLIB_COMPAT=ON -DBUILD_SHARED_LIBS=ON \
@@ -19,9 +33,49 @@ RUN wget -qO- "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/${ZLIB_NG_VE
     cmake --build /tmp/build -j"$(nproc)" && \
     cmake --install /tmp/build
 
-FROM golang:1.27-alpine AS build
+# ---------------------------------------------------------------------------
+# libvips from source
+# ---------------------------------------------------------------------------
+FROM debian:trixie AS vips
+ARG VIPS_VERSION
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential meson ninja-build pkg-config ca-certificates curl \
+    libglib2.0-dev libexpat1-dev libjpeg-dev libpng-dev libwebp-dev \
+    libheif-dev libjxl-dev liborc-0.4-dev libimagequant-dev libdeflate-dev \
+    libcgif-dev liblcms2-dev libtiff-dev \
+  && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://github.com/libvips/libvips/releases/download/v${VIPS_VERSION}/vips-${VIPS_VERSION}.tar.xz" \
+    | tar xJ -C /tmp
+RUN meson setup /tmp/vips-${VIPS_VERSION}/build /tmp/vips-${VIPS_VERSION} \
+      --buildtype=release --prefix=/opt/vips --libdir=lib \
+      -Dspng=disabled -Dmagick=disabled -Dpdfium=disabled -Dpoppler=disabled \
+      -Dcfitsio=disabled -Dnifti=disabled -Dopenslide=disabled -Dmatio=disabled \
+      -Dopenexr=disabled -Darchive=disabled -Dfftw=disabled -Dnsgif=false
+RUN ninja -C /tmp/vips-${VIPS_VERSION}/build && \
+    ninja -C /tmp/vips-${VIPS_VERSION}/build install
+
+# ---------------------------------------------------------------------------
+# Go binaries
+# ---------------------------------------------------------------------------
+FROM golang:1.27-trixie AS build
 ARG VERSION=0.1.0-dev
-RUN apk add --no-cache build-base pkgconf vips-dev vips-heif
+ARG VIPS_VERSION
+# libheif-plugin-aomenc is a separate package in Debian: without it libvips can
+# decode AVIF but silently fails to encode it.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libheif-plugin-aomenc \
+    libglib2.0-dev libexpat1-dev libjpeg-dev libpng-dev libwebp-dev \
+    libheif-dev libjxl-dev liborc-0.4-dev libimagequant-dev libdeflate-dev \
+    libcgif-dev liblcms2-dev libtiff-dev \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=vips /opt/vips /opt/vips
+COPY --from=zlibng /opt/zlib-ng /opt/zlib-ng
+ENV LD_LIBRARY_PATH=/opt/vips/lib:/opt/zlib-ng/lib \
+    PKG_CONFIG_PATH=/opt/vips/lib/pkgconfig \
+    CGO_CFLAGS="-I/opt/vips/include" \
+    CGO_LDFLAGS="-L/opt/vips/lib -Wl,-rpath,/opt/vips/lib"
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -32,16 +86,27 @@ RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -tags vips \
     CGO_ENABLED=1 GOOS=linux go build -trimpath -tags vips \
     -ldflags "-s -w" -o /out/ioimgctl ./cmd/ioimgctl
 
-FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata vips vips-heif && \
-    addgroup -S ioimg && adduser -S -G ioimg ioimg && \
-    mkdir -p /var/cache/ioimg && chown -R ioimg:ioimg /var/cache/ioimg
-COPY --from=zlibng /opt/zlib-ng/lib /opt/zlib-ng/lib
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim
+ARG VIPS_VERSION
+# The distro libvips is installed only for its dependency closure (jpeg, png,
+# webp, heif, jxl, orc, imagequant, deflate, cgif); LD_LIBRARY_PATH shadows it
+# with the source build above.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata libvips42t64 libheif-plugin-aomenc \
+  && rm -rf /var/lib/apt/lists/* \
+  && addgroup --system ioimg && adduser --system --ingroup ioimg ioimg \
+  && mkdir -p /var/cache/ioimg && chown -R ioimg:ioimg /var/cache/ioimg
+COPY --from=vips /opt/vips /opt/vips
+COPY --from=zlibng /opt/zlib-ng /opt/zlib-ng
 COPY --from=build /out/ioimg /usr/local/bin/ioimg
 COPY --from=build /out/ioimgctl /usr/local/bin/ioimgctl
 USER ioimg
-# Prepend, so libpng's libz.so.1 resolves to zlib-ng before the musl zlib.
-ENV LD_LIBRARY_PATH=/opt/zlib-ng/lib \
+ENV LD_LIBRARY_PATH=/opt/vips/lib:/opt/zlib-ng/lib \
+    MALLOC_ARENA_MAX=2 \
     IOIMG_ADDR=:8080 \
     IOIMG_CACHE_DIR=/var/cache/ioimg \
     IOIMG_LOG_FORMAT=json
