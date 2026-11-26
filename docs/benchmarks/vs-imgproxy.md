@@ -151,3 +151,55 @@ Catatan pembacaan lain:
   `pinning-and-zlib-ng.md`); sisa core dipakai request lain.
 - Variasi antar-run di laptop ini 5-10% karena thermal, jadi angka 2 core
   dibaca sebagai rentang (PNG 38-42, WebP 38-42, AVIF 11-13).
+
+## AVIF: gap-nya di decoder, bukan encoder
+
+Setelah h2h terkoreksi (PNG 1,43×, WebP 1,21×, JPEG 0,94×, AVIF 0,71×), AVIF
+diselidiki sampai level pustaka. Semua angka di bawah dari image produksi
+(`ioimg:vips-prod`, `--cpus=2`, satu koneksi, semua MISS).
+
+### Batas bawah: decode AVIF mahal dan tidak mau di-paralelkan
+
+| Operasi | `VIPS_CONCURRENCY=1` | 2 | 4 | 8 |
+| --- | --- | --- | --- | --- |
+| decode AVIF 2040×1356 | 41 ms | 39 | 36 | 46 |
+| decode PNG 2040×1356 | 45 ms | 40 | 40 | 43 |
+| decode JPEG 2400×1600 | 25 ms | 20 | 20 | 22 |
+
+Decode AVIF praktis datar (~40 ms) — dav1d/libheif tidak memberi apa pun lewat
+`VIPS_CONCURRENCY`. imgproxy menyelesaikan **seluruh** request AVIF (decode +
+resize + encode) dalam ~46 ms, jadi keunggulan mereka tidak mungkin dari
+encoder: build libheif/dav1d mereka lebih cepat, bukan setelan kita.
+
+`heifload` juga tidak punya jalur decode berukuran kecil: `[scale=...]`,
+`[thumbnail]`, `[page=0]` semuanya ditolak. Tidak ada shrink-on-load untuk AVIF,
+berbeda dari JPEG.
+
+### Satu-satunya tuas yang tersisa: thread untuk encoder aom
+
+| Konfigurasi (2 koneksi, AVIF sumber → AVIF) | img/s |
+| --- | --- |
+| `VIPS_CONCURRENCY=1` (default kita) | **13** |
+| 2 | 12 |
+| 4 | 11 |
+
+Pada satu koneksi `VIPS_CONCURRENCY=4` memang menaikkan PNG→AVIF dari 10 ke 17
+img/s, tapi keuntungan itu hilang begitu ada dua request bersamaan: yang
+dimenangkan encoder dibayar oleh decoder yang kehabisan core. Default tetap 1,
+karena pada 2 koneksi concurrency 1 menang di **semua** format (JPEG 130 vs 107,
+PNG 38 vs 35).
+
+### Tidak ada encoder AV1 alternatif di Debian trixie
+
+`libheif` 1.23.6 hanya menyediakan plugin `aomenc`, `dav1d`, `libde265`;
+`libheif-plugin-svtenc` dan `-rav1e` tidak dipaketkan (percobaan `apt-get
+install` gagal). rav1e pernah dicoba lewat host dan hasilnya 61 KB vs 37 KB —
+bukan kandidat.
+
+**Kesimpulan:** AVIF tidak bisa dikalahkan dengan tuning. Kalau prioritas produk
+menuntut menang di AVIF, jalannya adalah mengganti tumpukan encoder menjadi
+libavif + SVT-AV1 (2–4× lebih cepat pada kualitas setara) dan menerima bahwa
+byte hasil tidak lagi identik dengan jalur aom — itu keputusan paritas, bukan
+optimasi. Sampai itu diputuskan, mitigasi yang sudah berlaku: AVIF hanya
+muncul lewat `f_auto`, biaya encode dibayar sekali per objek, dan HIT tidak
+menyentuh encoder sama sekali.
