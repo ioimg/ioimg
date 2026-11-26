@@ -121,6 +121,15 @@ func Transform(img image.Image, o ops.Ops, opts Options) ([]byte, map[string]flo
 		}
 	}
 	img = enforceMinimum(img, o)
+	// Reshape order: resize -> extend -> flatten -> effects -> watermark ->
+	// encode. Extend pads the resized result into the requested canvas; flatten
+	// then composites it onto the background (white unless bg_ is set).
+	if o.Extend {
+		img = extendImage(img, o, backgroundFor(o, false))
+	}
+	if o.Flatten {
+		img = flattenImage(img, backgroundFor(o, true))
+	}
 	if o.Pixelate > 0 {
 		img = pixelate(img, o.Pixelate)
 	}
@@ -245,7 +254,7 @@ func encodeAt(img image.Image, o ops.Ops, format ops.Format, quality int) ([]byt
 		// JPEG has no alpha: flatten onto the requested background (white by
 		// default) so transparent PNGs do not turn black.
 		if hasAlpha(img) {
-			img = flatten(img, o.Background)
+			img = flattenImage(img, backgroundForJPEG(o))
 		}
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 			return nil, fmt.Errorf("encode jpeg: %w", err)
@@ -366,7 +375,7 @@ func geometry(src image.Image, o ops.Ops) (image.Image, error) {
 		nw, nh := fitSize(sw, sh, tw, th, o.Enlarge)
 		inner := scale(src, nw, nh, o.Algorithm)
 		canvas := image.NewNRGBA(image.Rect(0, 0, tw, th))
-		fillBackground(canvas, o.Background)
+		fillCanvas(canvas, backgroundFor(o, false))
 		dx, dy := anchor(inner.Bounds().Dx(), inner.Bounds().Dy(), tw, th, o.Gravity)
 		xdraw.Draw(canvas, image.Rect(dx, dy, dx+inner.Bounds().Dx(), dy+inner.Bounds().Dy()), inner, image.Point{}, xdraw.Over)
 		return canvas, nil
@@ -829,38 +838,6 @@ func toPaletted(src image.Image) image.Image {
 		}
 	}
 	return img
-}
-
-func flatten(src image.Image, bg string) image.Image {
-	b := src.Bounds()
-	dst := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	fillBackground(dst, bg)
-	xdraw.Draw(dst, dst.Bounds(), src, b.Min, xdraw.Over)
-	return dst
-}
-
-func fillBackground(dst *image.NRGBA, bg string) {
-	c := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-	if bg != "" && bg != "transparent" && len(bg) == 6 {
-		c = color.NRGBA{R: hex(bg[0:2]), G: hex(bg[2:4]), B: hex(bg[4:6]), A: 255}
-	}
-	xdraw.Draw(dst, dst.Bounds(), &image.Uniform{C: c}, image.Point{}, xdraw.Src)
-}
-
-func hex(s string) uint8 {
-	var v uint8
-	for _, c := range s {
-		v <<= 4
-		switch {
-		case c >= '0' && c <= '9':
-			v |= uint8(c - '0')
-		case c >= 'a' && c <= 'f':
-			v |= uint8(c-'a') + 10
-		case c >= 'A' && c <= 'F':
-			v |= uint8(c-'A') + 10
-		}
-	}
-	return v
 }
 
 func toNRGBA(src image.Image) *image.NRGBA {

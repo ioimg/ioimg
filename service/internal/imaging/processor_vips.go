@@ -10,6 +10,7 @@ package imaging
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"math"
 	"os"
 	"runtime"
@@ -130,11 +131,8 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 	timings["transform"] = elapsed(start)
 
 	if opts.OutFormat == ops.FormatJPEG && img.HasAlpha() {
-		bg := backgroundColor(o.Background)
-		if bg.A == 0 {
-			bg = &vips.ColorRGBA{R: 255, G: 255, B: 255, A: 255}
-		}
-		if err := img.Flatten(&vips.Color{R: bg.R, G: bg.G, B: bg.B}); err != nil {
+		img, err = flattenVips(img, backgroundForJPEG(o))
+		if err != nil {
 			return Result{}, fmt.Errorf("flatten: %w", err)
 		}
 	}
@@ -200,11 +198,8 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 	timings := map[string]float64{"transform": elapsed(start)}
 
 	if opts.OutFormat == ops.FormatJPEG && img.HasAlpha() {
-		bg := backgroundColor(o.Background)
-		if bg.A == 0 {
-			bg = &vips.ColorRGBA{R: 255, G: 255, B: 255, A: 255}
-		}
-		if err := img.Flatten(&vips.Color{R: bg.R, G: bg.G, B: bg.B}); err != nil {
+		img, err = flattenVips(img, backgroundForJPEG(o))
+		if err != nil {
 			return Result{}, fmt.Errorf("flatten: %w", err)
 		}
 	}
@@ -294,7 +289,8 @@ func thumbnailPlan(src []byte, o ops.Ops, opts Options) (thumbnailOp, bool) {
 		return thumbnailOp{}, false
 	}
 	if o.Trim > 0 || o.Rotate != 0 || o.Flip != "" || o.Blur > 0 || o.Sharpen > 0 ||
-		o.Pixelate > 0 || o.Brightness != 0 || o.Contrast != 0 || o.Saturation != 0 || o.Monochrome {
+		o.Pixelate > 0 || o.Brightness != 0 || o.Contrast != 0 || o.Saturation != 0 || o.Monochrome ||
+		o.Extend || o.Flatten {
 		return thumbnailOp{}, false
 	}
 	if !stillImage(src) {
@@ -442,6 +438,21 @@ func apply(img *vips.ImageRef, o ops.Ops) (*vips.ImageRef, error) {
 	}
 	if err := geometry(img, o); err != nil {
 		return nil, err
+	}
+	// Reshape order: resize -> extend -> flatten -> effects -> watermark ->
+	// encode. Extend pads the resized result into the requested canvas; flatten
+	// then composites it onto the background (white unless bg_ is set).
+	if o.Extend {
+		if err := extendVips(img, o); err != nil {
+			return nil, err
+		}
+	}
+	if o.Flatten {
+		next, err := flattenVips(img, backgroundFor(o, true))
+		if err != nil {
+			return nil, err
+		}
+		img = next
 	}
 	if o.Pixelate > 0 {
 		if err := pixelateVips(img, o.Pixelate); err != nil {
@@ -616,7 +627,13 @@ func geometry(img *vips.ImageRef, o ops.Ops) error {
 			}
 		}
 		dx, dy := anchor(nw, nh, tw, th, o.Gravity)
-		return img.EmbedBackgroundRGBA(dx, dy, tw, th, backgroundColor(o.Background))
+		bg := backgroundFor(o, false)
+		if bg.A != 255 && !img.HasAlpha() {
+			if err := img.AddAlpha(); err != nil {
+				return err
+			}
+		}
+		return img.EmbedBackgroundRGBA(dx, dy, tw, th, vipsBackground(bg))
 	case ops.ResizeCrop:
 		if tw <= 0 || th <= 0 {
 			return fmt.Errorf("c_crop requires w and h")
@@ -918,35 +935,79 @@ func interesting(g ops.Gravity) vips.Interesting {
 	}
 }
 
-func backgroundColor(raw string) *vips.ColorRGBA {
-	if raw == "" || raw == "transparent" {
-		return &vips.ColorRGBA{}
-	}
-	if len(raw) != 6 {
-		return &vips.ColorRGBA{}
-	}
-	return &vips.ColorRGBA{
-		R: hexByte(raw[0:2]),
-		G: hexByte(raw[2:4]),
-		B: hexByte(raw[4:6]),
-		A: 255,
-	}
+func vipsBackground(c color.NRGBA) *vips.ColorRGBA {
+	return &vips.ColorRGBA{R: c.R, G: c.G, B: c.B, A: c.A}
 }
 
-func hexByte(s string) uint8 {
-	var v uint8
-	for _, c := range s {
-		v <<= 4
-		switch {
-		case c >= '0' && c <= '9':
-			v |= uint8(c - '0')
-		case c >= 'a' && c <= 'f':
-			v |= uint8(c-'a') + 10
-		case c >= 'A' && c <= 'F':
-			v |= uint8(c-'A') + 10
+// extendVips pads img into the requested canvas at the extend gravity. The
+// canvas is the exact w*DPR by h*DPR size; a missing side keeps the current
+// dimension.
+func extendVips(img *vips.ImageRef, o ops.Ops) error {
+	w, h := img.Width(), img.Height()
+	tw, th := o.EffectiveWidth(), o.EffectiveHeight()
+	if o.WidthAuto || tw <= 0 {
+		tw = w
+	}
+	if o.HeightAuto || th <= 0 {
+		th = h
+	}
+	if tw < w {
+		tw = w
+	}
+	if th < h {
+		th = h
+	}
+	if tw == w && th == h {
+		return nil
+	}
+	g := o.ExtendGravity
+	if g == "" {
+		g = ops.GravityCenter
+	}
+	dx, dy := anchor(w, h, tw, th, g)
+	bg := backgroundFor(o, false)
+	if bg.A != 255 && !img.HasAlpha() {
+		if err := img.AddAlpha(); err != nil {
+			return err
 		}
 	}
-	return v
+	return img.EmbedBackgroundRGBA(dx, dy, tw, th, vipsBackground(bg))
+}
+
+// flattenVips composites img over bg. An opaque background uses vips' native
+// Flatten (which drops alpha); a semi-transparent one uses Composite so the
+// result keeps the background alpha, matching the pure-Go backend.
+func flattenVips(img *vips.ImageRef, bg color.NRGBA) (*vips.ImageRef, error) {
+	// An image without an alpha band is already fully opaque, so flattening it
+	// is a no-op. vips_flatten rejects such an image ("vector must have 1 or 2
+	// elements"), which would otherwise fail fl_1 on every opaque source.
+	if !img.HasAlpha() {
+		return img, nil
+	}
+	if bg.A == 255 {
+		if err := img.Flatten(&vips.Color{R: bg.R, G: bg.G, B: bg.B}); err != nil {
+			return nil, err
+		}
+		return img, nil
+	}
+	w, h := img.Width(), img.Height()
+	canvas, err := vips.NewImageFromMemory(
+		[]byte{bg.R, bg.G, bg.B, bg.A}, 1, 1, 4,
+		vips.BandFormatUchar, vips.InterpretationSRGB,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := canvas.EmbedBackgroundRGBA(0, 0, w, h, vipsBackground(bg)); err != nil {
+		canvas.Close()
+		return nil, err
+	}
+	if err := canvas.Composite(img, vips.BlendModeOver, 0, 0); err != nil {
+		canvas.Close()
+		return nil, err
+	}
+	img.Close()
+	return canvas, nil
 }
 
 func dominantColor(img *vips.ImageRef) string {

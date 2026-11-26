@@ -96,12 +96,12 @@ Konsekuensinya untuk dokumen ini:
 | Resizing | ✅ | `w`, `h`, `c_*` |
 | Resize dengan algoritma pilihan | ✅ | `ra_nearest/linear/cubic/lanczos2/lanczos3`; vips pakai kernel native, pure Go memetakan Lanczos→Catmull-Rom |
 | Crop & trim | ✅ | `c_crop`, `trim` |
-| Padding | ✅ | `c_pad`, `bg` |
+| Padding | ✅ | `c_pad`, `bg` (termasuk alpha) |
 | Min width / min height | ✅ | `mw`, `mh`: hasil lebih kecil diperbesar, rasio tetap; boleh tanpa `w`/`h` |
-| Extending | 🟡 | via `c_pad`; belum op `extend` terpisah |
+| Extending | ✅ | `ex`/`extend` + gravity, padding ke kanvas `w`×`h`; dijalankan setelah resize |
 | Rotating | 🟡 | 90/180/270 + auto EXIF (`ar_0` mematikan auto-rotate); belum sudut arbitrer |
-| Flattening | 🟡 | otomatis untuk JPEG & pad; belum op flatten independen |
-| Flatten background semi-transparan | ⛔ | `bg` hanya `RRGGBB` |
+| Flattening | ✅ | `fl`/`flatten` untuk semua format output; default putih, dijalankan setelah extend |
+| Flatten background semi-transparan | ✅ | `bg_RRGGBBAA` / `bg_R:G:B` + `bga` (alpha 0..1), identik di backend Go dan vips |
 | Watermark image | ✅ | `wm_` + `wmu_`; kompositing di `internal/imaging/watermark.go`, dipakai kedua backend |
 | Watermark text/custom | ⛔ | butuh font + Pango; sengaja belum |
 | Watermark shadow/rotate | ⛔ | `wmsh`/`wmr` belum; rotasi gambar watermark perlu affine |

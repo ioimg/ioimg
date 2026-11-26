@@ -67,7 +67,10 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `f` | format | `auto`, `avif`, `webp`, `jpeg`, `png`, `gif`, `json` | `auto` | `json` mengembalikan metadata, bukan gambar |
 | `q` | quality | 1..100, `auto` | per-format | `auto` = heuristic berdasarkan ukuran & konten |
 | `dpr` | device pixel ratio | 1, 1.5, 2, 3 | 1 | Mengalikan `w` & `h` |
-| `bg` | background | hex `RRGGBB`, `transparent` | `transparent` | Untuk `pad` dan PNG→JPEG |
+| `bg` | background | hex `RRGGBB`/`RRGGBBAA`, `R:G:B` (0..255 per komponen), `transparent` | `transparent` | Warna padding, `extend`, dan `flatten`. Hex 8 digit membawa alpha; `R:G:B` dinormalkan ke hex |
+| `bga` | background alpha | 0..1 | 1 | Dikalikan ke alpha `bg`; alias `background_alpha`. `bga_0` membuat background transparan |
+| `ex` | extend | `1`/`0`, opsional `:gravity` (`ce`, `no`, `so`, `ea`, `we`, `noea`, `nowe`, `soea`, `sowe`, atau nama panjang) | `0`, gravity `center` | Memperluas hasil ke kanvas `w`×`h` (setelah DPR) bila hasil lebih kecil, diisi `bg`. Gravity `auto`/`face` ditolak; wajib ada `w` atau `h`. Alias `extend` |
+| `fl` | flatten | `1`/`0` | `0` | Mengomposit hasil ke `bg` untuk format output apa pun; tanpa `bg` default putih. Alias `flatten` |
 | `blur` | blur | 0..100 | 0 | Gaussian sigma proporsional |
 | `bri` | brightness | -100..100 | 0 | Ditambahkan di parity pack 1; alias `brightness` |
 | `con` | contrast | -100..100 | 0 | Alias `contrast` |
@@ -102,6 +105,11 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `avifo` | opsi encoder AVIF | `subsample` (0=4:4:4, 1=4:2:2, 2=4:2:0) | — | Fitur **Pro** imgproxy |
 | `skp` | skip processing | daftar ekstensi dipisah `:` atau `,`: `jpg`, `jpeg`, `png`, `webp`, `avif`, `gif` | — | Proses dilewati bila format sumber ada di daftar **dan** format output yang diminta sama dengan format sumber. Respons berisi byte sumber apa adanya (tanpa decode/transform, melewati guard resolusi). Alias `skip_processing` |
 | `raw` | raw pass-through | `1`, `t`, `true`, `0`, `f`, `false` | `0` | `raw_1` mengembalikan byte sumber tanpa decode, tanpa cek resolusi/ukuran file. `Content-Type` ditebak dari magic bytes (JPEG/PNG/GIF/WebP/AVIF), default `application/octet-stream` |
+
+Urutan pipeline bentuk: **resize → extend → flatten → effects → watermark →
+encode**. `ex` memperluas hasil resize ke kanvas yang diminta, lalu `fl`
+mengomposit hasilnya ke `bg`; keduanya terjadi sebelum efek warna, watermark,
+dan encoding.
 
 `dt` dan `col` dijalankan berurutan (colorize lalu duotone) setelah resize dan
 adjust; keduanya masuk canonical form (dan karena itu cache key + signature)
@@ -383,3 +391,7 @@ Berguna untuk membangun `srcset`, placeholder, dan layout tanpa memproses gambar
 
 Keduanya tetap melewati signing, allowlist/SSRF, rate limit, dan pencatatan kuota.
 `Content-Type` ditentukan dari magic bytes (fallback `application/octet-stream`).
+
+Catatan paritas: `fl_`/`ex_` dengan background semi-transparan dihitung dengan
+pembulatan berbeda di dua backend (vips vs pure Go), selisih maksimum 1 per
+kanal. Test paritas memakai toleransi, bukan kesetaraan byte.

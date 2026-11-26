@@ -82,7 +82,21 @@ type Ops struct {
 	Format     Format
 	Quality    int // 0 = auto
 	DPR        float64
-	Background string // RRGGBB or "transparent"; empty = not set
+	// Background is the padding/flatten colour. It is stored in canonical
+	// form: "transparent", RRGGBB, or RRGGBBAA when the alpha is not 255.
+	// Empty means "not set" (transparent for padding, white for flattening).
+	Background string
+	// BackgroundAlpha is multiplied into the background alpha (imgproxy bga_).
+	// Default() keeps the historical opaque background at 1.
+	BackgroundAlpha float64
+	backgroundSet   bool // bga_ was explicitly present (bga_0 is meaningful)
+	// Extend pads a smaller result up to the requested w/h canvas (imgproxy ex_)
+	// using Background. ExtendGravity anchors the image in that canvas.
+	Extend        bool
+	ExtendGravity Gravity
+	// Flatten composites the result onto Background regardless of output format
+	// (imgproxy fl_). The default background is white.
+	Flatten    bool
 	Blur       float64
 	Sharpen    float64
 	Brightness int    // -100..100
@@ -152,13 +166,23 @@ type Ops struct {
 // AutoRotates reports whether EXIF orientation should be baked into pixels.
 func (o Ops) AutoRotates() bool { return o.AutoRotate == nil || *o.AutoRotate }
 
+// BackgroundAlphaMultiplier returns the bga_ multiplier. A zero Ops{} keeps the
+// historical opaque background; an explicit bga_0 still returns 0.
+func (o Ops) BackgroundAlphaMultiplier() float64 {
+	if o.BackgroundAlpha == 0 && !o.backgroundSet {
+		return 1
+	}
+	return o.BackgroundAlpha
+}
+
 // Default returns the implicit defaults from docs/API.md.
 func Default() Ops {
 	return Ops{
-		Resize:  ResizeFit,
-		Gravity: GravityCenter,
-		Format:  FormatAuto,
-		DPR:     1,
+		Resize:          ResizeFit,
+		Gravity:         GravityCenter,
+		Format:          FormatAuto,
+		DPR:             1,
+		BackgroundAlpha: 1,
 	}
 }
 
@@ -246,10 +270,15 @@ func splitPairs(raw string) ([]pair, error) {
 			out = append(out, pair{key: part, value: ""})
 			continue
 		}
-		// skip_processing_* contains an underscore in the option name itself, so
-		// it cannot go through the generic first-underscore split.
-		if strings.HasPrefix(strings.ToLower(part), "skip_processing_") {
+		// Some option names contain an underscore themselves, so they cannot go
+		// through the generic first-underscore split.
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(lower, "skip_processing_") {
 			out = append(out, pair{key: "skip_processing", value: part[len("skip_processing_"):]})
+			continue
+		}
+		if strings.HasPrefix(lower, "background_alpha_") {
+			out = append(out, pair{key: "background_alpha", value: part[len("background_alpha_"):]})
 			continue
 		}
 		k, v, ok := strings.Cut(part, "_")
@@ -306,14 +335,11 @@ func (o *Ops) set(key, value string) error {
 			return fmt.Errorf("c: unknown mode %q", value)
 		}
 	case "g":
-		switch Gravity(value) {
-		case GravityCenter, GravityNorth, GravitySouth, GravityEast, GravityWest,
-			GravityNorthEast, GravityNorthWest, GravitySouthEast, GravitySouthWest,
-			GravityAuto, GravityFace:
-			o.Gravity = Gravity(value)
-		default:
-			return fmt.Errorf("g: unknown gravity %q", value)
+		g, err := parseGravity(value)
+		if err != nil {
+			return fmt.Errorf("g: %w", err)
 		}
+		o.Gravity = g
 	case "f":
 		f, ok := parseFormat(value)
 		if !ok {
@@ -341,14 +367,46 @@ func (o *Ops) set(key, value string) error {
 		default:
 			return fmt.Errorf("dpr must be 1, 1.5, 2 or 3")
 		}
-	case "bg":
-		if value != "transparent" {
-			if len(value) != 6 || !isHex(value) {
-				return fmt.Errorf("bg must be RRGGBB or transparent")
-			}
-			value = strings.ToLower(value)
+	case "bg", "background":
+		bg, err := parseBackground(value)
+		if err != nil {
+			return fmt.Errorf("bg: %w", err)
 		}
-		o.Background = value
+		o.Background = bg
+	case "bga", "background_alpha":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 || f > 1 {
+			return fmt.Errorf("bga must be a number between 0 and 1")
+		}
+		o.BackgroundAlpha = f
+		o.backgroundSet = true
+	case "ex", "extend":
+		parts := strings.Split(value, ":")
+		if len(parts) > 2 {
+			return fmt.Errorf("ex takes extend:gravity")
+		}
+		on, err := parseBool(parts[0])
+		if err != nil {
+			return fmt.Errorf("ex must be 1 or 0")
+		}
+		o.Extend = on
+		o.ExtendGravity = GravityCenter
+		if len(parts) == 2 && parts[1] != "" {
+			g, err := parseGravity(parts[1])
+			if err != nil {
+				return fmt.Errorf("ex: %w", err)
+			}
+			if g == GravityAuto || g == GravityFace {
+				return fmt.Errorf("ex gravity must not be auto or face")
+			}
+			o.ExtendGravity = g
+		}
+	case "fl", "flatten":
+		on, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("fl must be 1 or 0")
+		}
+		o.Flatten = on
 	case "blur":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil || f < 0 || f > 100 {
@@ -604,6 +662,12 @@ func (o *Ops) validate() error {
 			return fmt.Errorf("at least one of w, h, mw, mh or f is required")
 		}
 	}
+	if o.Extend && o.Width == 0 && o.Height == 0 && !o.WidthAuto && !o.HeightAuto {
+		return fmt.Errorf("extend requires w or h")
+	}
+	if o.Extend && (o.ExtendGravity == GravityAuto || o.ExtendGravity == GravityFace) {
+		return fmt.Errorf("extend gravity must not be auto or face")
+	}
 	if o.Rotate != 0 && o.Flip != "" {
 		return fmt.Errorf("rot and flip cannot be combined")
 	}
@@ -714,6 +778,83 @@ func isHex(s string) bool {
 	return true
 }
 
+// parseBackground normalises the accepted background forms to the canonical
+// string used in cache keys: "transparent", RRGGBB, or RRGGBBAA. It accepts
+// imgproxy's 6/8-digit hex and the decimal R:G:B (optionally :A) form.
+func parseBackground(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "transparent") {
+		return "transparent", nil
+	}
+	var r, g, b, a uint8 = 0, 0, 0, 255
+	if strings.Contains(v, ":") {
+		parts := strings.Split(v, ":")
+		if len(parts) != 3 && len(parts) != 4 {
+			return "", fmt.Errorf("must be RRGGBB, RRGGBBAA, R:G:B, R:G:B:A or transparent")
+		}
+		vals := [4]uint8{r, g, b, a}
+		for i, part := range parts {
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 0 || n > 255 {
+				return "", fmt.Errorf("component %d must be 0..255", i+1)
+			}
+			vals[i] = uint8(n)
+		}
+		r, g, b, a = vals[0], vals[1], vals[2], vals[3]
+	} else {
+		v = strings.TrimPrefix(v, "#")
+		if (len(v) != 6 && len(v) != 8) || !isHex(v) {
+			return "", fmt.Errorf("must be RRGGBB, RRGGBBAA, R:G:B or transparent")
+		}
+		v = strings.ToLower(v)
+		n, _ := strconv.ParseUint(v, 16, 32)
+		if len(v) == 8 {
+			r = uint8(n >> 24)
+			g = uint8(n >> 16)
+			b = uint8(n >> 8)
+			a = uint8(n)
+		} else {
+			r = uint8(n >> 16)
+			g = uint8(n >> 8)
+			b = uint8(n)
+		}
+	}
+	hex := fmt.Sprintf("%02x%02x%02x", r, g, b)
+	if a != 255 {
+		hex += fmt.Sprintf("%02x", a)
+	}
+	return hex, nil
+}
+
+// parseGravity accepts both ioimg's full names and imgproxy's short aliases.
+func parseGravity(v string) (Gravity, error) {
+	switch strings.ToLower(v) {
+	case "center", "ce":
+		return GravityCenter, nil
+	case "north", "no":
+		return GravityNorth, nil
+	case "south", "so":
+		return GravitySouth, nil
+	case "east", "ea":
+		return GravityEast, nil
+	case "west", "we":
+		return GravityWest, nil
+	case "north_east", "northeast", "noea":
+		return GravityNorthEast, nil
+	case "north_west", "northwest", "nowe":
+		return GravityNorthWest, nil
+	case "south_east", "southeast", "soea":
+		return GravitySouthEast, nil
+	case "south_west", "southwest", "sowe":
+		return GravitySouthWest, nil
+	case "auto":
+		return GravityAuto, nil
+	case "face":
+		return GravityFace, nil
+	}
+	return "", fmt.Errorf("unknown gravity %q", v)
+}
+
 // EffectiveWidth returns the clamped pixel width after DPR, or 0.
 func (o Ops) EffectiveWidth() int {
 	return clampDim(float64(o.Width) * o.DPR)
@@ -755,6 +896,9 @@ func (o Ops) Canonical() string {
 	}
 	if o.Background != "" {
 		add("bg", o.Background)
+	}
+	if o.BackgroundAlpha != 1 && (o.backgroundSet || o.BackgroundAlpha != 0) {
+		add("bga", trimFloat(o.BackgroundAlpha))
 	}
 	if o.Blur != 0 {
 		add("blur", trimFloat(o.Blur))
@@ -805,7 +949,17 @@ func (o Ops) Canonical() string {
 	if o.Enlarge {
 		add("enlarge", "1")
 	}
+	if o.Extend {
+		g := o.ExtendGravity
+		if g == "" {
+			g = GravityCenter
+		}
+		add("ex", "1:"+string(g))
+	}
 	add("f", string(o.Format))
+	if o.Flatten {
+		add("fl", "1")
+	}
 	if o.Flip != "" {
 		add("flip", o.Flip)
 	}
