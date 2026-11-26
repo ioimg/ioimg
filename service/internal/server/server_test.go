@@ -59,6 +59,11 @@ func newHarnessOpts(t *testing.T, mutate func(*config.Config), opts func(*Option
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Path == "/bomb.png" {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(bombPNGHeader(100_000, 100_000))
+			return
+		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(payload)
 	}))

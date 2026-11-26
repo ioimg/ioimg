@@ -153,7 +153,7 @@ Konsekuensinya untuk dokumen ini:
 | Source URL encryption | ⛔ | AES-GCM + key terpisah |
 | Authorization header | ⛔ | perlu mode auth upstream |
 | Resolution restriction | ✅ | 40 MP / 8192 px |
-| Source file size restriction | ✅ | `IOIMG_SOURCE_MAX_BYTES` |
+| Source file size restriction | ✅ | `IOIMG_SOURCE_MAX_BYTES`; `raw_` memakai plafon terpisah `IOIMG_SOURCE_RAW_MAX_BYTES` (default 4×, min 64 MiB) karena body tetap dibuffer di memori |
 | Animation frame restriction | ⛔ | decode animasi belum penuh |
 | Allowed source restriction | ✅ | allowlist + SSRF guard |
 | Source hashsum verification | ✅ | `hs_type:hash` (md5/sha1/sha256/sha512), dibandingkan constant-time sebelum decode, 422 saat beda (Pro di imgproxy) |
@@ -189,8 +189,8 @@ Konsekuensinya untuk dokumen ini:
 | Presets | ✅ | `IOIMG_PRESETS`, `t_*` |
 | Fallback image | ✅ | `fiu_` per-request (base64url), dipakai saat fetch/decode gagal; redirect `IOIMG_FALLBACK_REDIRECT` tetap ada |
 | Per-request fallback | ✅ | `fiu_`: ikut cache key + signature, header respons `X-IOIMG-Fallback: 1` |
-| Skip processing | ⛔ | pass-through berdasarkan format sumber |
-| Raw file streaming | ⛔ | endpoint raw tanpa decode |
+| Skip processing | ✅ | `skp_jpg:png` / `skip_processing_jpg:png`; pass-through bila format output = format sumber |
+| Raw file streaming | ✅ | `raw_1` (alias nilai `t`/`true`); stream byte sumber tanpa decode/guard |
 | ETag | ✅ | kuat, berbasis cache key |
 | Cookie pass-through | ⛔ | perlu allowlist eksplisit |
 | Custom source request headers | ⛔ | config per-host |
@@ -220,7 +220,7 @@ Konsekuensinya untuk dokumen ini:
 
 1. **Fallback image**: `IOIMG_FALLBACK_IMAGE` + override per request.
 2. **Custom source headers**: `IOIMG_SOURCE_HEADERS` per host.
-3. **Skip processing / raw streaming**: `raw_1` atau endpoint `/raw/...`.
+3. ~~**Skip processing / raw streaming**~~ — selesai: `skp_` dan `raw_1`.
 4. **Option codec per-format** (`pngo`/`webpo`/`avifo`) — Pro di imgproxy.
 5. ~~**Gradient** (`gr_`)~~ — selesai (Pro di imgproxy).
 6. **Auto palette PNG**: aktifkan kuantisasi jika ukuran turun.

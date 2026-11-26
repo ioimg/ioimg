@@ -100,11 +100,20 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `pngo` | opsi encoder PNG | `interlaced:quantize:quantization_colors` (0/1; 0/1; 2..256) | — | Semua argumen opsional (`pngo_1`, `pngo_::64`). Fitur **Pro** imgproxy |
 | `webpo` | opsi encoder WebP | `compression:smart_subsample:preset` (0..6; 0/1; 0..5) | — | `compression` = method libwebp / reduction effort libvips. Fitur **Pro** imgproxy |
 | `avifo` | opsi encoder AVIF | `subsample` (0=4:4:4, 1=4:2:2, 2=4:2:0) | — | Fitur **Pro** imgproxy |
+| `skp` | skip processing | daftar ekstensi dipisah `:` atau `,`: `jpg`, `jpeg`, `png`, `webp`, `avif`, `gif` | — | Proses dilewati bila format sumber ada di daftar **dan** format output yang diminta sama dengan format sumber. Respons berisi byte sumber apa adanya (tanpa decode/transform, melewati guard resolusi). Alias `skip_processing` |
+| `raw` | raw pass-through | `1`, `t`, `true`, `0`, `f`, `false` | `0` | `raw_1` mengembalikan byte sumber tanpa decode, tanpa cek resolusi/ukuran file. `Content-Type` ditebak dari magic bytes (JPEG/PNG/GIF/WebP/AVIF), default `application/octet-stream` |
 
 `dt` dan `col` dijalankan berurutan (colorize lalu duotone) setelah resize dan
 adjust; keduanya masuk canonical form (dan karena itu cache key + signature)
 karena mengubah piksel. Di backend vips keduanya melakukan satu round-trip
 `ToImage`/`NewImageFromGoImage` per request — hanya saat opsi dipakai.
+
+`raw_1` dan `skp_` masuk canonical form, jadi cache key dan signature berbeda
+dari URL tanpa opsi tersebut. Keduanya melewati decode dan guard resolusi,
+tetapi tetap melewati signing, allowlist/SSRF, rate limit, dan kuota. `raw_1`
+adalah jalur yang benar-benar unchecked: source tidak di-decode dan byte
+respons identik dengan source; `skp_` hanya aktif bila format sumber sama
+dengan format output yang diminta.
 
 `gr` ikut round-trip vips yang sama dengan `dt`/`col` (satu `ToImage` per
 request, hanya saat dipakai).
@@ -364,3 +373,13 @@ Event: `transform.batch.completed`, `quota.threshold`, `origin.error_rate`, `key
 ```
 
 Berguna untuk membangun `srcset`, placeholder, dan layout tanpa memproses gambar.
+
+### `raw` dan `skp` (skip processing)
+
+| Op | Arti |
+| --- | --- |
+| `raw_1` / `raw:1` | Kirim byte sumber apa adanya: tanpa decode, tanpa cek resolusi/ukuran. Batas fetch memakai `IOIMG_SOURCE_RAW_MAX_BYTES` (default 4× `IOIMG_SOURCE_MAX_BYTES`, minimum 64 MiB), karena body dibuffer di memori. |
+| `skp_<ext>:...` / `skip_processing_<ext>:...` | Lewati transformasi bila format sumber sama dengan format output dan sumber termasuk ekstensi yang didaftarkan (`jpg`/`jpeg`, `png`, `webp`, `avif`, `gif`). Batas ukuran sumber **tetap** berlaku. |
+
+Keduanya tetap melewati signing, allowlist/SSRF, rate limit, dan pencatatan kuota.
+`Content-Type` ditentukan dari magic bytes (fallback `application/octet-stream`).

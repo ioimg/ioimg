@@ -33,9 +33,12 @@ type Config struct {
 	Signing *sign.Signer
 	Presets map[string]string
 
-	SourceTimeout   time.Duration
-	SourceMaxBytes  int64
-	SourceUserAgent string
+	SourceTimeout  time.Duration
+	SourceMaxBytes int64
+	// SourceRawMaxBytes bounds raw_ pass-through fetches, which skip the decode
+	// and resolution guards but are still buffered in memory.
+	SourceRawMaxBytes int64
+	SourceUserAgent   string
 	// WatermarkURL is the default watermark image used by wm_ when the request
 	// does not supply wmu_ (imgproxy's IMGPROXY_WATERMARK_URL).
 	WatermarkURL string
@@ -103,7 +106,7 @@ func validateEnvSyntax() error {
 			}
 		}
 	}
-	check([]string{"IOIMG_CACHE_MAX_MB", "IOIMG_CONCURRENCY", "IOIMG_MAX_DIMENSION", "IOIMG_SOURCE_MAX_BYTES", "IOIMG_AVIF_EFFORT", "IOIMG_AVIF_SPEED", "IOIMG_CELERIS_WORKERS"}, func(v string) error { _, err := strconv.Atoi(v); return err })
+	check([]string{"IOIMG_CACHE_MAX_MB", "IOIMG_CONCURRENCY", "IOIMG_MAX_DIMENSION", "IOIMG_SOURCE_MAX_BYTES", "IOIMG_SOURCE_RAW_MAX_BYTES", "IOIMG_AVIF_EFFORT", "IOIMG_AVIF_SPEED", "IOIMG_CELERIS_WORKERS"}, func(v string) error { _, err := strconv.Atoi(v); return err })
 	check([]string{}, func(v string) error { _, err := strconv.ParseFloat(v, 64); return err })
 	check([]string{"IOIMG_ACCESS_LOG", "IOIMG_ALLOW_ANY_HOST", "IOIMG_ALLOW_PRIVATE", "IOIMG_ALLOW_PROJECT_HEADER", "IOIMG_DISABLE_AVIF", "IOIMG_DISABLE_WEBP", "IOIMG_FALLBACK_REDIRECT", "IOIMG_L2_ENABLED", "IOIMG_L2_USE_SSL", "IOIMG_SIGNATURE_EXPIRY_REQUIRED", "IOIMG_SIGNATURE_INCLUDE_EXP", "IOIMG_SIGNED_ONLY", "IOIMG_OFFLOAD", "IOIMG_JPEG_PROGRESSIVE"}, func(v string) error { _, err := strconv.ParseBool(v); return err })
 	check([]string{"IOIMG_CONTROL_SYNC", "IOIMG_CONTROL_TIMEOUT", "IOIMG_L2_TIMEOUT", "IOIMG_SOURCE_TIMEOUT"}, func(v string) error { _, err := time.ParseDuration(v); return err })
@@ -118,25 +121,26 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		Addr:             env("IOIMG_ADDR", ":8080"),
-		BaseURL:          strings.TrimRight(env("IOIMG_BASE_URL", "http://localhost:8080"), "/"),
-		LogFormat:        env("IOIMG_LOG_FORMAT", "text"),
-		AllowAnyHost:     envBool("IOIMG_ALLOW_ANY_HOST", false),
-		AllowPrivate:     envBool("IOIMG_ALLOW_PRIVATE", false),
-		SignedOnly:       envBool("IOIMG_SIGNED_ONLY", false),
-		FallbackRedirect: envBool("IOIMG_FALLBACK_REDIRECT", false),
-		SourceTimeout:    envDuration("IOIMG_SOURCE_TIMEOUT", 15*time.Second),
-		SourceMaxBytes:   int64(envInt("IOIMG_SOURCE_MAX_BYTES", 25*1024*1024)),
-		SourceUserAgent:  env("IOIMG_SOURCE_USER_AGENT", "github.com/ioimg/ioimg/service/0.1 (+https://ioimg.net)"),
-		WatermarkURL:     env("IOIMG_WATERMARK_URL", ""),
-		MaxDimension:     envInt("IOIMG_MAX_DIMENSION", ops.MaxDimension),
-		Concurrency:      envInt("IOIMG_CONCURRENCY", 0),
-		CacheDir:         env("IOIMG_CACHE_DIR", "./cache"),
-		CacheMaxBytes:    int64(envInt("IOIMG_CACHE_MAX_MB", 4096)) * 1024 * 1024,
-		AccessLog:        envBool("IOIMG_ACCESS_LOG", false),
-		MetricsToken:     os.Getenv("IOIMG_METRICS_TOKEN"),
-		DisableAVIF:      envBool("IOIMG_DISABLE_AVIF", false),
-		DisableWebP:      envBool("IOIMG_DISABLE_WEBP", false),
+		Addr:              env("IOIMG_ADDR", ":8080"),
+		BaseURL:           strings.TrimRight(env("IOIMG_BASE_URL", "http://localhost:8080"), "/"),
+		LogFormat:         env("IOIMG_LOG_FORMAT", "text"),
+		AllowAnyHost:      envBool("IOIMG_ALLOW_ANY_HOST", false),
+		AllowPrivate:      envBool("IOIMG_ALLOW_PRIVATE", false),
+		SignedOnly:        envBool("IOIMG_SIGNED_ONLY", false),
+		FallbackRedirect:  envBool("IOIMG_FALLBACK_REDIRECT", false),
+		SourceTimeout:     envDuration("IOIMG_SOURCE_TIMEOUT", 15*time.Second),
+		SourceMaxBytes:    int64(envInt("IOIMG_SOURCE_MAX_BYTES", 25*1024*1024)),
+		SourceRawMaxBytes: int64(envInt("IOIMG_SOURCE_RAW_MAX_BYTES", 0)),
+		SourceUserAgent:   env("IOIMG_SOURCE_USER_AGENT", "github.com/ioimg/ioimg/service/0.1 (+https://ioimg.net)"),
+		WatermarkURL:      env("IOIMG_WATERMARK_URL", ""),
+		MaxDimension:      envInt("IOIMG_MAX_DIMENSION", ops.MaxDimension),
+		Concurrency:       envInt("IOIMG_CONCURRENCY", 0),
+		CacheDir:          env("IOIMG_CACHE_DIR", "./cache"),
+		CacheMaxBytes:     int64(envInt("IOIMG_CACHE_MAX_MB", 4096)) * 1024 * 1024,
+		AccessLog:         envBool("IOIMG_ACCESS_LOG", false),
+		MetricsToken:      os.Getenv("IOIMG_METRICS_TOKEN"),
+		DisableAVIF:       envBool("IOIMG_DISABLE_AVIF", false),
+		DisableWebP:       envBool("IOIMG_DISABLE_WEBP", false),
 	}
 	c.Allowlist = splitList(os.Getenv("IOIMG_ALLOWLIST"))
 	switch strings.ToLower(env("IOIMG_LOG_LEVEL", "info")) {

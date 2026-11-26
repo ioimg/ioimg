@@ -7,9 +7,21 @@ package server
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/goceleris/celeris"
+)
+
+// celeris' io_uring/epoll engines close a connection when un-ACKed response
+// bytes exceed 4 MiB (maxSendQueueBytes), which truncated every raw_ pass-
+// through larger than that to an empty body. Bodies above this threshold go
+// through the incremental StreamWriter in fixed chunks instead, keeping the
+// pending-send window small. 1 MiB leaves room for the response headers plus
+// several chunks in flight on a slow link.
+const (
+	celerisStreamThreshold = 1 << 20
+	celerisStreamChunk     = 256 << 10
 )
 
 type celerisWriter struct {
@@ -44,18 +56,63 @@ func (w *celerisWriter) flush() {
 		status = http.StatusOK
 	}
 	ct := w.h.Get("Content-Type")
-	for k, vs := range w.h {
-		if strings.EqualFold(k, "Content-Type") {
-			continue
-		}
-		for _, v := range vs {
-			w.c.SetHeader(k, v)
-		}
-	}
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
-	_ = w.c.Blob(status, ct, w.body)
+	// celeris writes content-type and content-length itself, so passing the
+	// net/http duplicates through SetHeader would emit both twice.
+	var extra [][2]string
+	for k, vs := range w.h {
+		if strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vs {
+			extra = append(extra, [2]string{strings.ToLower(k), v})
+		}
+	}
+
+	if len(w.body) <= celerisStreamThreshold {
+		for _, kv := range extra {
+			w.c.SetHeader(kv[0], kv[1])
+		}
+		_ = w.c.Blob(status, ct, w.body)
+		return
+	}
+
+	// A detached connection raises the engine's pending-send cap from 4 MiB to
+	// 64 MiB (the raw_ ceiling), and is the documented precondition for
+	// StreamWriter on the native engines. done() returns the Context to the pool.
+	done := w.c.Detach()
+	defer done()
+	sw := w.c.StreamWriter()
+	if sw == nil {
+		// Engines without incremental streaming cannot send this body at all.
+		// Buffer nothing: report the truncation instead of lying about the size.
+		_ = w.c.Blob(http.StatusInternalServerError, "text/plain; charset=utf-8", []byte("response too large for this transport\n"))
+		return
+	}
+	headers := make([][2]string, 0, len(extra)+2)
+	headers = append(headers, [2]string{"content-type", ct})
+	headers = append(headers, [2]string{"content-length", strconv.Itoa(len(w.body))})
+	headers = append(headers, extra...)
+	if err := sw.WriteHeader(status, headers); err != nil {
+		return
+	}
+	for off := 0; off < len(w.body); off += celerisStreamChunk {
+		end := off + celerisStreamChunk
+		if end > len(w.body) {
+			end = len(w.body)
+		}
+		if _, err := sw.Write(w.body[off:end]); err != nil {
+			break
+		}
+		// Flush after each chunk: the engine closes the connection once un-ACKed bytes
+		// pass 4 MiB, so the pending window has to be drained as we go.
+		if err := sw.Flush(); err != nil {
+			break
+		}
+	}
+	_ = sw.Close()
 }
 
 // CelerisHandler serves the data plane through celeris.

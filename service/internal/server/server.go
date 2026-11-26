@@ -92,6 +92,7 @@ func New(cfg config.Config, o Options) (*Server, error) {
 		fetcher = source.New(source.Options{
 			Timeout:      cfg.SourceTimeout,
 			MaxBytes:     cfg.SourceMaxBytes,
+			RawMaxBytes:  cfg.SourceRawMaxBytes,
 			AllowHost:    func(string) bool { return true },
 			AllowPrivate: cfg.AllowPrivate,
 			UserAgent:    cfg.SourceUserAgent,
@@ -355,7 +356,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		s.metrics.Hits.Add(1)
 		h.Set("X-IOIMG-Cache", "HIT-L1")
 		h.Set("Last-Modified", mod.UTC().Format(http.TimeFormat))
-		s.writeBody(w, r, format, target.Ops.Filename, data)
+		s.writeBody(w, r, format, target.Ops.Filename, data, target.Ops)
 		return
 	}
 	// Per-project admission first: a noisy neighbour must not consume the shared
@@ -457,7 +458,30 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		h.Set("Server-Timing", serverTiming(res.timings))
 		h.Set("X-IOIMG-Transform-Ms", strconv.FormatFloat(res.timings["total"], 'f', 2, 64))
 	}
-	s.writeBody(w, r, format, target.Ops.Filename, res.data)
+	s.writeBody(w, r, format, target.Ops.Filename, res.data, target.Ops)
+}
+
+// skipApplies reports whether skp_ matches both the probed source format and
+// the requested output format. jpg/jpeg are treated as aliases.
+func skipApplies(list []string, sourceFormat string, out ops.Format) bool {
+	want := normalizeSkipExtension(string(out))
+	if normalizeSkipExtension(sourceFormat) != want {
+		return false
+	}
+	for _, ext := range list {
+		if normalizeSkipExtension(ext) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSkipExtension(ext string) string {
+	ext = strings.ToLower(ext)
+	if ext == "jpg" {
+		return "jpeg"
+	}
+	return ext
 }
 
 // render fetches, decodes, transforms, and encodes one image.
@@ -466,7 +490,15 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 	total := time.Now()
 
 	fetchStart := time.Now()
-	src, err := s.fetcher.Fetch(ctx, t.Source)
+	// raw_ is allowed past the normal source size guard (imgproxy treats raw
+	// sources as unchecked); it is still bounded by the raw ceiling, because the
+	// body is buffered here. skp_ keeps the normal limit: it only skips the
+	// transform, not the source checks.
+	fetch := s.fetcher.Fetch
+	if t.Ops.Raw {
+		fetch = s.fetcher.FetchRaw
+	}
+	src, err := fetch(ctx, t.Source)
 	usedFallback := false
 	if err != nil {
 		// fiu_: a per-request fallback image is served when the source cannot be
@@ -476,7 +508,7 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 			return nil, timings, mapSourceError(err)
 		}
 		s.metrics.Fallback.Add(1)
-		fallback, ferr := s.fetcher.Fetch(ctx, t.Ops.FallbackURL)
+		fallback, ferr := fetch(ctx, t.Ops.FallbackURL)
 		if ferr != nil {
 			s.log.Warn("fallback fetch failed", "error", ferr, "source_error", err)
 			return nil, timings, mapSourceError(err)
@@ -490,11 +522,43 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 		timings["fallback"] = 1
 	}
 
+	// raw_ streams the fetched bytes untouched. It deliberately runs no hashsum,
+	// decode, resolution, or size check; signing, allowlist/SSRF, rate limiting,
+	// and quota accounting have already happened in handleImage.
+	if t.Ops.Raw {
+		res, err := imaging.PassThrough(src.Body)
+		if err != nil {
+			return nil, timings, errDecode()
+		}
+		for k, v := range res.Timings {
+			timings[k] = v
+		}
+		timings["total"] = ms(total)
+		return res.Data, timings, nil
+	}
+
 	// hs_: verify the digest before spending CPU on a decode. A fallback image is
 	// not the source the hashsum was computed for, so it is not verified.
 	if !usedFallback && !t.Ops.Hashsum.IsZero() {
 		if !hashsumMatches(t.Ops.Hashsum, src.Body) {
 			return nil, timings, errHashsumMismatch()
+		}
+	}
+
+	// skp_: skip processing when the source is one of the listed formats and the
+	// requested output format is the same. The header probe is enough to decide;
+	// no pixel decode or dimension guard runs on the pass-through path.
+	if len(t.Ops.SkipProcessing) > 0 {
+		res, err := imaging.PassThrough(src.Body)
+		if err != nil {
+			return nil, timings, errDecode()
+		}
+		if res.Info.Format != "" && skipApplies(t.Ops.SkipProcessing, res.Info.Format, format) {
+			for k, v := range res.Timings {
+				timings[k] = v
+			}
+			timings["total"] = ms(total)
+			return res.Data, timings, nil
 		}
 	}
 
@@ -602,8 +666,15 @@ func offloadDisabled() bool {
 	return err == nil && !off
 }
 
-func (s *Server) writeBody(w http.ResponseWriter, r *http.Request, format ops.Format, filename string, data []byte) {
-	w.Header().Set("Content-Type", imaging.ContentType(format))
+func (s *Server) writeBody(w http.ResponseWriter, r *http.Request, format ops.Format, filename string, data []byte, o ops.Ops) {
+	ctype := imaging.ContentType(format)
+	// raw_ and skp_ responses may be the source bytes verbatim, so the actual
+	// media type comes from the bytes themselves rather than the requested
+	// output format. Unknown payloads fall back to application/octet-stream.
+	if o.Raw || (len(o.SkipProcessing) > 0 && format != ops.FormatJSON) {
+		ctype = imaging.ContentTypeFromBytes(data)
+	}
+	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	if filename != "" {
 		// fn_ is sanitised at parse time (letters, digits, dot, dash, underscore

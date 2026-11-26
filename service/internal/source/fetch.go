@@ -36,6 +36,7 @@ type Fetcher struct {
 	client       *http.Client
 	timeout      time.Duration
 	maxBytes     int64
+	rawMax       int64
 	allowHost    func(string) bool
 	allowPrivate bool
 	userAgent    string
@@ -43,8 +44,12 @@ type Fetcher struct {
 
 // Options configures a Fetcher.
 type Options struct {
-	Timeout      time.Duration
-	MaxBytes     int64
+	Timeout  time.Duration
+	MaxBytes int64
+	// RawMaxBytes bounds raw_ pass-through fetches. Defaults to 4x MaxBytes
+	// (never below 64 MiB), because raw sources are exempt from the decode and
+	// resolution guards but are still buffered in memory.
+	RawMaxBytes  int64
 	AllowHost    func(string) bool
 	AllowPrivate bool
 	UserAgent    string
@@ -58,6 +63,12 @@ func New(o Options) *Fetcher {
 	}
 	if o.MaxBytes <= 0 {
 		o.MaxBytes = 25 << 20
+	}
+	if o.RawMaxBytes <= 0 {
+		o.RawMaxBytes = o.MaxBytes * 4
+	}
+	if o.RawMaxBytes < 64<<20 {
+		o.RawMaxBytes = 64 << 20
 	}
 	if o.AllowHost == nil {
 		o.AllowHost = func(string) bool { return true }
@@ -77,6 +88,7 @@ func New(o Options) *Fetcher {
 	f := &Fetcher{
 		timeout:      o.Timeout,
 		maxBytes:     o.MaxBytes,
+		rawMax:       o.RawMaxBytes,
 		allowHost:    o.AllowHost,
 		allowPrivate: o.AllowPrivate,
 		userAgent:    o.UserAgent,
@@ -93,8 +105,22 @@ func New(o Options) *Fetcher {
 	return f
 }
 
-// Fetch retrieves an absolute http(s) URL.
+// Fetch retrieves an absolute http(s) URL, enforcing the configured source
+// size limit.
 func (f *Fetcher) Fetch(ctx context.Context, raw string) (*Result, error) {
+	return f.fetch(ctx, raw, f.maxBytes)
+}
+
+// FetchRaw retrieves an absolute http(s) URL for a raw_ pass-through. imgproxy
+// treats raw sources as unchecked, but the body is buffered in memory here, so
+// the limit is raised to the raw ceiling instead of being removed: an endless
+// upstream must not be able to exhaust the process. Allowlist and SSRF guards
+// still apply.
+func (f *Fetcher) FetchRaw(ctx context.Context, raw string) (*Result, error) {
+	return f.fetch(ctx, raw, f.rawMax)
+}
+
+func (f *Fetcher) fetch(ctx context.Context, raw string, maxBytes int64) (*Result, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, ErrInvalidSource
@@ -124,14 +150,19 @@ func (f *Fetcher) Fetch(ctx context.Context, raw string) (*Result, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%w: upstream %d", ErrOrigin, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, f.maxBytes+1))
+	var body []byte
+	if maxBytes < 0 {
+		body, err = io.ReadAll(resp.Body)
+	} else {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || osTimeout(err) {
 			return nil, ErrTimeout
 		}
 		return nil, fmt.Errorf("%w: %v", ErrOrigin, err)
 	}
-	if int64(len(body)) > f.maxBytes {
+	if maxBytes >= 0 && int64(len(body)) > maxBytes {
 		return nil, ErrTooLarge
 	}
 	if len(body) == 0 {

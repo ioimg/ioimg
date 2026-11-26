@@ -408,3 +408,25 @@ mode = "signed"
 - [`INFRA_INTEGRATIONS.md`](INFRA_INTEGRATIONS.md) — storage, CDN, platform, observability
 - [`SECURITY.md`](SECURITY.md) — model ancaman
 - [`adr/`](adr/) — keputusan dan alasannya
+
+
+### Batas ukuran respons per transport
+
+Engine `celeris` (io_uring/epoll) menutup koneksi bila byte respons yang belum
+di-ACK melewati **4 MiB** (`maxSendQueueBytes`), dan `Blob` tidak bisa
+memindahkan badan sebesar itu. Karena `raw_` boleh mengirim sumber sampai
+`IOIMG_SOURCE_RAW_MAX_BYTES` (default 64 MiB), adapter di
+`service/internal/server/transport_celeris.go` memakai dua jalur:
+
+| Ukuran badan | Jalur |
+| --- | --- |
+| ≤ 1 MiB | `Context.Blob` (satu buffer, satu syscall) |
+| > 1 MiB | `Context.Detach` + `StreamWriter`, potongan 256 KiB, `Flush` per potongan |
+
+`Detach` menaikkan plafon antrean kirim ke 64 MiB, dan `Flush` per potongan
+menjaga jendela pending tetap kecil. Kalau engine tidak punya `Streamer`,
+adapter mengembalikan 500 alih-alih mengiklankan `Content-Length` yang tidak
+bisa dikirim — truncation diam-diam adalah bug yang pernah terjadi di sini.
+
+Diverifikasi manual (binary `-tags vips`, transport celeris): `raw_1` untuk
+sumber 4 MB, 5 MB, dan PNG DIV2K 4.717.456 byte — semuanya utuh byte-per-byte.

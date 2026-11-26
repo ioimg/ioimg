@@ -141,6 +141,12 @@ type Ops struct {
 	// AutoRotate applies the EXIF orientation to the pixels. Nil means the
 	// default (true), so a plain Ops{} keeps the historical behaviour.
 	AutoRotate *bool
+	// SkipProcessing lists source formats for which processing is skipped when
+	// the requested output format equals the source format (imgproxy skp_).
+	SkipProcessing []string
+	// Raw streams the source bytes untouched, without decode or limits
+	// (imgproxy raw_).
+	Raw bool
 }
 
 // AutoRotates reports whether EXIF orientation should be baked into pixels.
@@ -221,6 +227,11 @@ var bareOptions = map[string]bool{"wm": true, "watermark": true}
 
 func isBareOption(s string) bool { return bareOptions[strings.ToLower(s)] }
 
+func isSkipOption(s string) bool {
+	k := strings.ToLower(s)
+	return k == "skp" || k == "skip_processing"
+}
+
 func splitPairs(raw string) ([]pair, error) {
 	parts := strings.Split(raw, ",")
 	out := make([]pair, 0, len(parts))
@@ -235,7 +246,22 @@ func splitPairs(raw string) ([]pair, error) {
 			out = append(out, pair{key: part, value: ""})
 			continue
 		}
+		// skip_processing_* contains an underscore in the option name itself, so
+		// it cannot go through the generic first-underscore split.
+		if strings.HasPrefix(strings.ToLower(part), "skip_processing_") {
+			out = append(out, pair{key: "skip_processing", value: part[len("skip_processing_"):]})
+			continue
+		}
 		k, v, ok := strings.Cut(part, "_")
+		if !ok {
+			// imgproxy writes skp_ extensions separated by colons, but a comma is
+			// also accepted here for symmetry with the ops list. A bare extension
+			// immediately after skp_ is therefore a continuation of that value.
+			if len(out) > 0 && isSkipOption(out[len(out)-1].key) && isSkipExtension(part) {
+				out[len(out)-1].value += ":" + part
+				continue
+			}
+		}
 		if !ok || k == "" || v == "" {
 			return nil, fmt.Errorf("invalid op %q (want name_value)", part)
 		}
@@ -505,6 +531,18 @@ func (o *Ops) set(key, value string) error {
 		default:
 			return fmt.Errorf("ar must be 0 or 1")
 		}
+	case "skp", "skip_processing":
+		exts, err := parseSkipProcessing(value)
+		if err != nil {
+			return err
+		}
+		o.SkipProcessing = exts
+	case "raw":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("raw must be 1, t, true, 0, f or false")
+		}
+		o.Raw = b
 	case "ra":
 		switch Algorithm(value) {
 		case AlgoLanczos3, AlgoLanczos2, AlgoCubic, AlgoLinear, AlgoNearest:
@@ -561,7 +599,7 @@ func (o *Ops) validate() error {
 		}
 	}
 	if o.Width == 0 && o.Height == 0 && !o.WidthAuto && !o.HeightAuto &&
-		o.MinWidth == 0 && o.MinHeight == 0 {
+		o.MinWidth == 0 && o.MinHeight == 0 && !o.Raw && len(o.SkipProcessing) == 0 {
 		if o.Format == FormatAuto {
 			return fmt.Errorf("at least one of w, h, mw, mh or f is required")
 		}
@@ -593,6 +631,49 @@ func sanitizeFilename(v string) (string, error) {
 		return "", fmt.Errorf("fn must not start with a dot or contain ..")
 	}
 	return v, nil
+}
+
+func parseBool(v string) (bool, error) {
+	switch strings.ToLower(v) {
+	case "1", "t", "true":
+		return true, nil
+	case "0", "f", "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("must be 1, t, true, 0, f or false")
+}
+
+var skipExtensions = map[string]bool{
+	"jpg": true, "jpeg": true, "png": true, "webp": true, "avif": true, "gif": true,
+}
+
+func isSkipExtension(s string) bool { return skipExtensions[strings.ToLower(s)] }
+
+// parseSkipProcessing accepts a colon- or comma-separated extension list and
+// returns it lowercased, deduplicated and sorted so the canonical form is
+// stable regardless of argument order.
+func parseSkipProcessing(v string) ([]string, error) {
+	parts := strings.FieldsFunc(v, func(r rune) bool { return r == ':' || r == ',' })
+	seen := make(map[string]bool, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		ext := strings.ToLower(strings.TrimSpace(part))
+		if ext == "" {
+			continue
+		}
+		if !skipExtensions[ext] {
+			return nil, fmt.Errorf("skp: unknown extension %q (want jpg, jpeg, png, webp, avif or gif)", part)
+		}
+		if !seen[ext] {
+			seen[ext] = true
+			out = append(out, ext)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("skp requires at least one extension")
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func parseSigned(v string) (int, error) {
@@ -782,6 +863,12 @@ func (o Ops) Canonical() string {
 	}
 	if o.WebPEncoder != nil {
 		add("webpo", o.WebPEncoder.canonical())
+	}
+	if len(o.SkipProcessing) > 0 {
+		add("skp", strings.Join(o.SkipProcessing, ":"))
+	}
+	if o.Raw {
+		add("raw", "1")
 	}
 	return b.String()
 }
