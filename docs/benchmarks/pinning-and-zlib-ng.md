@@ -89,7 +89,15 @@ JPEG seri, AVIF 1,3–1,4× dengan file yang sama besar.
 p50: PNG 46,8 ms (imgproxy 74,7), JPEG 14,6 (14,0), WebP 39,8 (60,3),
 AVIF 84,8 (105,5).
 
-## 5. AVIF: effort 2 sebagai default
+## 5. AVIF: effort 1 sebagai default
+
+> **Koreksi (lihat `vs-imgproxy.md` §"Koreksi")**: angka tabel di bagian ini
+> diukur dengan loadgen yang menghitung sebagian HIT sebagai MISS, sehingga
+> throughput AVIF di sini terlalu tinggi. Pengukuran ulang lewat HTTP pada
+> image produksi memberi effort 1 = 176 ms / 36.790 B, effort 2 = 185 ms /
+> 37.128 B, effort 3 = 232 ms, effort 4 = 589 ms, effort 9 = 7,13 s. Default
+> sekarang **1** (tercepat sekaligus terkecil); tabel di bawah disimpan sebagai
+> catatan riwayat pengukuran.
 
 Sumber `.avif` DIV2K, `fit 512`, q65, 2 koneksi:
 

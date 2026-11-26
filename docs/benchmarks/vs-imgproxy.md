@@ -85,34 +85,69 @@ Catatan: angka "sesudah" memakai zlib-ng lewat `LD_LIBRARY_PATH` di mesin uji
 
 Kedua server dijalankan sebagai container di mesin yang sama, `--network host`,
 `--cpus=2` (setara c7i.large 2 vCPU), origin nginx lokal, DIV2K, `fit 512x512`,
-cache dimatikan di kedua sisi, loadgen 2 koneksi selama 10 s, semua request
-cache-MISS (sumber diberi `?i=N` unik). imgproxy memakai setelan benchmark
-mereka sendiri: `IMGPROXY_JPEG_PROGRESSIVE=1`, `IMGPROXY_AVIF_SPEED=9`.
+cache dimatikan di kedua sisi, loadgen 2 koneksi selama 10 s, **semua request
+cache-MISS**. imgproxy memakai setelan benchmark mereka sendiri:
+`IMGPROXY_JPEG_PROGRESSIVE=1`, `IMGPROXY_AVIF_SPEED=9`.
 
-| Format | ioimg 2 core | ioimg tanpa limit | imgproxy 2 core | Rasio | p50 ioimg / imgproxy |
-| --- | --- | --- | --- | --- | --- |
-| JPEG q80 | 131,6 | 135,0 | 141,3 | 0,93x | 14,8 / 13,8 ms |
-| PNG (default) | **50,8** | 46,4 | 27,7 | **1,83x** | 38,7 / 72,7 ms |
-| WebP q75 | **41,7** | 49,0 | 33,4 | **1,25x** | 45,5 / 59,8 ms |
-| AVIF q65 effort 2 | **22,6** | 19,2 | 17,3 | **1,31x** | 87,8 / 104,5 ms |
+| Format | ioimg 2 core | imgproxy 2 core | Rasio | p50 ioimg / imgproxy |
+| --- | --- | --- | --- | --- |
+| JPEG q80 | 134 | 142 | 0,94x | 14,6 / 13,4 ms |
+| PNG q80 | **40** | 28 | **1,43x** | 42,7 / 72,7 ms |
+| WebP q75 | **40** | 33 | **1,21x** | 43,2 / 64,5 ms |
+| AVIF q65 effort 1 | 12 | **17** | **0,71x** | 160,3 / 105,6 ms |
 
 Ukuran output, satu gambar yang sama, kualitas sama:
 
 | Format | ioimg | imgproxy | Selisih |
 | --- | --- | --- | --- |
-| JPEG q80 | 55.394 B | 51.715 B | +7,1% (mereka progressive) |
+| JPEG q80 | 55.347 B | 50.955 B | +8,6% (mereka progressive) |
 | PNG | 384.065 B | 384.257 B | -0,05% |
-| WebP q75 | 43.256 B | 43.468 B | -0,5% |
-| AVIF q65 | 37.263 B | 37.795 B | -1,4% |
+| WebP q75 | 40.332 B | 40.484 B | -0,4% |
+| AVIF q65 | 36.790 B | 37.603 B | -2,2% |
 
-Catatan pembacaan:
+### Koreksi: harness bench sebelumnya menghitung sebagian HIT sebagai MISS
 
-- JPEG satu-satunya format di mana imgproxy lebih cepat (7%), dan itu bukan
-  gap mesin gambar: selisihnya sejalan dengan progressive encoding yang mereka
-  nyalakan secara default. `IOIMG_JPEG_PROGRESSIVE=1` menukar -7% byte dengan
-  -20% throughput (lihat `pinning-and-zlib-ng.md` §6).
-- PNG/WebP/AVIF "tanpa limit" tidak lebih tinggi dari 2 core karena pipeline
-  transform memang hanya memakai ~1,4 core per request (lihat §2 dokumen di
-  atas); sisa core dipakai request lain, bukan satu request.
+Sampai bagian ini, loadgen memberi indeks request dari counter **per koneksi**.
+Dengan 2 koneksi, kedua koneksi memutar URL yang sama dari awal, sehingga
+sekitar separuh "MISS" sebenarnya cache HIT: throughput naik, p50 turun ke
+ratusan mikrodetik, dan rasio terhadap imgproxy (yang tidak punya cache) jadi
+terlalu bagus. Tabel di atas memakai loadgen yang sudah diperbaiki (counter
+global + latensi diukur setelah body dibaca), dan diverifikasi silang: jumlah
+file cache yang dibuat = jumlah request. Angka lama (PNG 1,83x, AVIF 1,31x)
+**tidak valid** dan sudah diganti.
+
+### Kesimpulan yang benar
+
+- **Menang**: PNG +43%, WebP +21% throughput, dengan ukuran output sama.
+- **Seri**: JPEG (0,94x, dalam noise + mereka progressive 8,6% lebih kecil).
+- **Kalah**: AVIF 0,71x — satu-satunya format di mana imgproxy lebih cepat.
+
+### AVIF: kenapa kalah, dan kenapa tetap effort 1
+
+`IMGPROXY_AVIF_SPEED=9` berarti "paling cepat" di imgproxy; di tumpukan kita
+`effort` justru makin lambat kalau dinaikkan. Diukur lewat HTTP pada image
+produksi (512 px, Q=65, satu request, termasuk decode + cache write):
+
+| effort | waktu | ukuran |
+| --- | --- | --- |
+| **1** | **176 ms** | **36.790 B** |
+| 2 | 185 ms | 37.128 B |
+| 3 | 232 ms | 36.933 B |
+| 4 | 589 ms | 37.794 B |
+| 6 | 1,46 s | 37.568 B |
+| 9 | 7,13 s | 37.749 B |
+
+Jadi effort 1 adalah yang tercepat **dan** terkecil: default sekarang 1
+(`IOIMG_AVIF_EFFORT`). imgproxy tetap lebih cepat karena meneruskan `speed` ke
+`cpu-used` libaom (jalur "cepat" yang tidak diekspos libvips 8.18 lewat
+`effort`). Mitigasi kita bukan mengejar angka itu, tapi menempatkan AVIF di
+tempat yang benar: `f_auto` + cache, di mana biaya encode hanya dibayar sekali
+per objek (HIT 77k img/s).
+
+Catatan pembacaan lain:
+
+- PNG/WebP "tanpa limit" tidak lebih tinggi dari 2 core karena pipeline
+  transform memang hanya memakai ~1,4 core per request (lihat §2 dokumen
+  `pinning-and-zlib-ng.md`); sisa core dipakai request lain.
 - Variasi antar-run di laptop ini 5-10% karena thermal, jadi angka 2 core
-  dibaca sebagai rentang (PNG 46-51, WebP 41-49, AVIF 19-23).
+  dibaca sebagai rentang (PNG 38-42, WebP 38-42, AVIF 11-13).

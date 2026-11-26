@@ -658,12 +658,12 @@ func encode(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, error) {
 	return fitBytesVips(img, format, o, o.MaxBytes, quality, out)
 }
 
-// avifEffortLevel is libheif's effort knob (0..9). libaom is pathologically
-// slow above 3 in libvips 8.18 (measured on a 400px image: effort 4 = 173 ms,
-// effort 3 = 40 ms, effort 2 = 22 ms, with a 0.2% size difference between 3 and
-// 4), so the default is 2 rather than libvips' own 4. On a DIV2K corpus (512px
-// fit, AVIF source) effort 2 serves 22 images/s at 37.1 kB, effort 3 14 images/s
-// and effort 1 26 images/s at 36.8 kB.
+// avifEffortLevel is libheif's effort knob (0..9), where lower is faster on
+// this stack. Measured through the production image on a 512px AVIF source
+// (Q=65, whole request): effort 1 = 176 ms / 36,790 B, effort 2 = 185 ms /
+// 37,128 B, effort 3 = 232 ms, effort 4 = 589 ms, effort 6 = 1.46 s,
+// effort 9 = 7.13 s. Effort 1 is both the fastest and the smallest, so it is
+// the default rather than libvips' own 4.
 var (
 	avifEffortOnce sync.Once
 	avifEffort     int
@@ -671,7 +671,7 @@ var (
 
 func avifEffortLevel() int {
 	avifEffortOnce.Do(func() {
-		avifEffort = 2
+		avifEffort = 1
 		if raw := strings.TrimSpace(os.Getenv("IOIMG_AVIF_EFFORT")); raw != "" {
 			if n, err := strconv.Atoi(raw); err == nil && n >= 0 && n <= 9 {
 				avifEffort = n
