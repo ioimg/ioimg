@@ -38,4 +38,4 @@ func (pureProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 
 // DecodeAny decodes an image with whichever backend is linked. It exists for
 // auxiliary images (watermarks) that must not assume the transform pipeline.
-func DecodeAny(data []byte) (image.Image, Info, error) { return decode(data, true) }
+func DecodeAny(data []byte) (image.Image, Info, error) { return decode(data, true, ops.Ops{}) }

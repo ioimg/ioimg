@@ -45,7 +45,7 @@ Diverifikasi langsung di halaman itu, bukan dari ingatan:
   monochrome (`bri`/`con`/`sat`/`mono`), unsharp masking (`sharp`), duotone
   (`dt`), colorize (`col`), gradient, watermark (URL/text/size/rotate/shadow),
   style, DPI, color profile, autoquality, **JPEG/PNG/WebP/AVIF options**,
-  page/pages, disable animation, video thumbnail, fallback image, hashsum,
+  video thumbnail, fallback image, hashsum,
   AES-CBC, best format, crop aspect ratio, object/blur detections.
 - **OSS**: `max_bytes`, `q`, auto-rotate, strip metadata, cache buster, zoom,
   extend, preset, trim, min/max width & height, resize type, enlarge, rotate,
@@ -79,7 +79,7 @@ Konsekuensinya untuk dokumen ini:
 | GIF (statis) | ✅ | — |
 | BMP | ✅ | input, baru |
 | TIFF | ✅ | input, baru |
-| Animated GIF/WebP | 🟡 | hanya frame pertama; output animasi belum |
+| Animated GIF/WebP | 🟢 | `pg`/`pgs`/`da` didukung; output tetap still (stack vertikal), animasi output belum. Pure Go: pilihan frame hanya untuk GIF |
 | JPEG XL | ⛔ | butuh binding libjxl; prioritas rendah |
 | SVG | 🔒 | sengaja ditolak (attack surface); sanitization belum |
 | ICO | ⛔ | decoder mudah; prioritas rendah |
@@ -155,7 +155,7 @@ Konsekuensinya untuk dokumen ini:
 | Authorization header | ⛔ | perlu mode auth upstream |
 | Resolution restriction | ✅ | 40 MP / 8192 px |
 | Source file size restriction | ✅ | `IOIMG_SOURCE_MAX_BYTES`; `raw_` memakai plafon terpisah `IOIMG_SOURCE_RAW_MAX_BYTES` (default 4×, min 64 MiB) karena body tetap dibuffer di memori |
-| Animation frame restriction | ⛔ | decode animasi belum penuh |
+| Animation frame restriction | ✅ | `pgs` maks 64 frame; frame tambahan = decode ekstra. `pg` di luar akhir jatuh ke frame terakhir. Pure Go hanya GIF; WebP/AVIF animasi tetap frame pertama |
 | Allowed source restriction | ✅ | allowlist + SSRF guard |
 | Source hashsum verification | ✅ | `hs_type:hash` (md5/sha1/sha256/sha512), dibandingkan constant-time sebelum decode, 422 saat beda (Pro di imgproxy) |
 | URL expiration | ✅ | `exp` |
@@ -225,7 +225,8 @@ Konsekuensinya untuk dokumen ini:
 4. **Option codec per-format** (`pngo`/`webpo`/`avifo`) — Pro di imgproxy.
 5. ~~**Gradient** (`gr_`)~~ — selesai (Pro di imgproxy).
 6. **Auto palette PNG**: aktifkan kuantisasi jika ukuran turun.
-7. **Animation frame limit**: batas jumlah frame + fallback statis.
+7. ~~**Animation frame limit**~~ — selesai: `pg`/`pgs`/`da`, maks 64 frame,
+   halaman di luar akhir jatuh ke frame terakhir.
 8. **Source hashsum**: `hs_<sha256>` untuk origin yang tidak ingin di-fetch ulang.
 
 ### Parity pack 4 — butuh pekerjaan lebih besar

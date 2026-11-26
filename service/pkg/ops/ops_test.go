@@ -167,3 +167,61 @@ func TestFilenameAndCachebusterAreSignedButNotCached(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePageSelection(t *testing.T) {
+	base, err := Parse("w_100", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Page != 0 || base.Pages != 1 || base.DisableAnimation {
+		t.Fatalf("unexpected defaults: %+v", base)
+	}
+	defaults, err := Parse("w_100,pg_0,pgs_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Canonical() != base.Canonical() {
+		t.Fatalf("explicit defaults changed canonical: %q vs %q", defaults.Canonical(), base.Canonical())
+	}
+
+	o, err := Parse("w_100,page_2,pages_3,disable_animation_0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Page != 2 || o.Pages != 3 || o.DisableAnimation {
+		t.Fatalf("unexpected page ops: %+v", o)
+	}
+	for _, want := range []string{"pg_2", "pgs_3"} {
+		if !strings.Contains(o.Canonical(), want) {
+			t.Fatalf("canonical %q missing %q", o.Canonical(), want)
+		}
+	}
+
+	for _, raw := range []string{"w_100,da_1", "w_100,disable_animation_1", "w_100,pg_2,pgs_3,da_1"} {
+		da, err := Parse(raw, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if !da.DisableAnimation || da.Page != 0 || da.Pages != 1 {
+			t.Fatalf("%s: da did not force still semantics: %+v", raw, da)
+		}
+		if da.PageIndex() != 0 || da.PageCount() != 1 {
+			t.Fatalf("%s: effective page = %d/%d", raw, da.PageIndex(), da.PageCount())
+		}
+		if !strings.Contains(da.Canonical(), "da_1") {
+			t.Fatalf("%s: canonical missing da_1: %q", raw, da.Canonical())
+		}
+		if strings.Contains(da.Canonical(), "pg_") || strings.Contains(da.Canonical(), "pgs_") {
+			t.Fatalf("%s: forced defaults leaked into canonical: %q", raw, da.Canonical())
+		}
+	}
+
+	for _, bad := range []string{
+		"w_100,pg_-1", "w_100,pg_x", "w_100,pgs_0", "w_100,pgs_65",
+		"w_100,da_2", "w_100,da_maybe",
+	} {
+		if _, err := Parse(bad, nil); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+}

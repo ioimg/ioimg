@@ -71,6 +71,10 @@ const (
 // MaxDimension is the hard limit for a requested width or height.
 const MaxDimension = 8192
 
+// MaxPages is the hard limit for pages_/pgs_. Each extra frame costs a full
+// decode, so a larger stack would turn one request into many.
+const MaxPages = 64
+
 // Ops is a normalised transformation request. Zero values mean "not set".
 type Ops struct {
 	Width      int
@@ -173,6 +177,33 @@ type Ops struct {
 	// Raw streams the source bytes untouched, without decode or limits
 	// (imgproxy raw_).
 	Raw bool
+	// Page selects the first frame of a paginated/animated source, numbered
+	// from zero (imgproxy pg_). Default() leaves it at 0.
+	Page int
+	// Pages is the number of consecutive frames stacked vertically, starting
+	// at Page (imgproxy pgs_). One page means a still image.
+	Pages int
+	// DisableAnimation treats every source as a still: Page is forced to 0 and
+	// Pages to 1, so the first frame is used (imgproxy da_).
+	DisableAnimation bool
+}
+
+// PageIndex returns the effective zero-based frame index. The zero value of
+// Ops selects frame 0; da_ disables frame selection altogether.
+func (o Ops) PageIndex() int {
+	if o.DisableAnimation || o.Page < 0 {
+		return 0
+	}
+	return o.Page
+}
+
+// PageCount returns the effective number of stacked pages. A zero value means
+// one page; da_ disables stacking.
+func (o Ops) PageCount() int {
+	if o.DisableAnimation || o.Pages < 1 {
+		return 1
+	}
+	return o.Pages
 }
 
 // AutoRotates reports whether EXIF orientation should be baked into pixels.
@@ -195,6 +226,7 @@ func Default() Ops {
 		Format:          FormatAuto,
 		DPR:             1,
 		BackgroundAlpha: 1,
+		Pages:           1,
 	}
 }
 
@@ -291,6 +323,10 @@ func splitPairs(raw string) ([]pair, error) {
 		}
 		if strings.HasPrefix(lower, "background_alpha_") {
 			out = append(out, pair{key: "background_alpha", value: part[len("background_alpha_"):]})
+			continue
+		}
+		if strings.HasPrefix(lower, "disable_animation_") {
+			out = append(out, pair{key: "disable_animation", value: part[len("disable_animation_"):]})
 			continue
 		}
 		// Watermark options are the exception to the first-underscore split:
@@ -644,6 +680,24 @@ func (o *Ops) set(key, value string) error {
 			return fmt.Errorf("raw must be 1, t, true, 0, f or false")
 		}
 		o.Raw = b
+	case "pg", "page":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("pg must be an integer >= 0")
+		}
+		o.Page = n
+	case "pgs", "pages":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > MaxPages {
+			return fmt.Errorf("pgs must be an integer between 1 and %d", MaxPages)
+		}
+		o.Pages = n
+	case "da", "disable_animation":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("da must be 1, t, true, 0, f or false")
+		}
+		o.DisableAnimation = b
 	case "ra":
 		switch Algorithm(value) {
 		case AlgoLanczos3, AlgoLanczos2, AlgoCubic, AlgoLinear, AlgoNearest:
@@ -682,6 +736,13 @@ func (o *Ops) set(key, value string) error {
 }
 
 func (o *Ops) validate() error {
+	// da_ treats every source as a still: page selection is meaningless and is
+	// forced back to the first frame so canonical/cache keys cannot disagree
+	// about which frame was used.
+	if o.DisableAnimation {
+		o.Page = 0
+		o.Pages = 1
+	}
 	// wmt_ alone is a complete watermark setup: unlike wmu_, text needs no
 	// image URL, so it activates the default placement. An explicit wm_0 still
 	// disables it.
@@ -1068,6 +1129,15 @@ func (o Ops) Canonical() string {
 	}
 	if o.Palette {
 		add("palette", "1")
+	}
+	if !o.DisableAnimation && o.Page != 0 {
+		add("pg", strconv.Itoa(o.Page))
+	}
+	if !o.DisableAnimation && o.Pages > 1 {
+		add("pgs", strconv.Itoa(o.Pages))
+	}
+	if o.DisableAnimation {
+		add("da", "1")
 	}
 	if o.PNGEncoder != nil {
 		add("pngo", o.PNGEncoder.canonical())

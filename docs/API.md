@@ -109,6 +109,9 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `avifo` | opsi encoder AVIF | `subsample` (0=4:4:4, 1=4:2:2, 2=4:2:0) | — | Fitur **Pro** imgproxy |
 | `skp` | skip processing | daftar ekstensi dipisah `:` atau `,`: `jpg`, `jpeg`, `png`, `webp`, `avif`, `gif` | — | Proses dilewati bila format sumber ada di daftar **dan** format output yang diminta sama dengan format sumber. Respons berisi byte sumber apa adanya (tanpa decode/transform, melewati guard resolusi). Alias `skip_processing` |
 | `raw` | raw pass-through | `1`, `t`, `true`, `0`, `f`, `false` | `0` | `raw_1` mengembalikan byte sumber tanpa decode, tanpa cek resolusi/ukuran file. `Content-Type` ditebak dari magic bytes (JPEG/PNG/GIF/WebP/AVIF), default `application/octet-stream` |
+| `pg` / `page` | pilih halaman/frame | integer >= 0 | `0` | Halaman pertama yang dipakai, dimulai dari nol. Halaman di luar akhir animasi jatuh ke frame terakhir yang tersedia. `da_1` memaksa nilai ini ke 0 |
+| `pgs` / `pages` | jumlah halaman/frame | 1..64 | `1` | Frame berurutan ditumpuk vertikal, rata kiri, mengikuti urutan sumber. Bila sumber punya lebih sedikit frame, hanya frame yang ada yang ditumpuk (tidak error). Setiap frame tambahan berarti satu decode ekstra. `da_1` memaksa nilai ini ke 1 |
+| `da` / `disable_animation` | anggap sumber sebagai still | `1`, `t`, `true`, `0`, `f`, `false` | `0` | `da_1` selalu memakai frame pertama dan menonaktifkan penumpukan; `f_json` melaporkan `isAnimated: false` |
 
 Urutan pipeline bentuk: **resize → extend → flatten → effects → watermark →
 encode**. `ex` memperluas hasil resize ke kanvas yang diminta, lalu `fl`
@@ -124,6 +127,18 @@ yang sama dengan compositing, jadi tidak pernah memanggil fetcher; `wmu_` dan
 adjust; keduanya masuk canonical form (dan karena itu cache key + signature)
 karena mengubah piksel. Di backend vips keduanya melakukan satu round-trip
 `ToImage`/`NewImageFromGoImage` per request — hanya saat opsi dipakai.
+
+`pg`/`pgs`/`da` masuk canonical form (nilai default `pg_0`/`pgs_1` tidak),
+jadi cache key dan signature berbeda untuk setiap pemilihan frame. `pgs`
+dibatasi 64 karena setiap frame tambahan dibuka sebagai decode terpisah.
+`da_1` menormalkan `pg`/`pgs` ke `0`/`1` secara semantik, jadi cache key-nya
+tidak bergantung pada nilai frame yang diabaikan.
+
+**Catatan backend animasi.** Backend libvips memakai `page`/`n` dari loader
+(`NumPages=1` per frame) dan mendukung GIF maupun WebP/AVIF animasi. Backend
+pure Go hanya punya decoder multi-frame untuk GIF (`image/gif`); untuk WebP/AVIF
+animasi ia tetap memakai frame pertama, dan `pg`/`pgs` tidak berpengaruh. Lihat
+[`IMGPARITY.md`](IMGPARITY.md).
 
 `raw_1` dan `skp_` masuk canonical form, jadi cache key dan signature berbeda
 dari URL tanpa opsi tersebut. Keduanya melewati decode dan guard resolusi,
@@ -145,6 +160,7 @@ diklaim:
 | `webpo` `compression` | ✅ (`libwebp` method 0..6) | ✅ (reduction effort 0..6) |
 | `webpo` `smart_subsample`, `preset` | tidak didukung | tidak didukung |
 | `avifo` `subsample` | ✅ (4:4:4 / 4:2:2 / 4:2:0) | tidak didukung (govips tidak meneruskan subsample AVIF) |
+| `pg`/`pgs`/`da` | ✅ GIF saja; format multi-frame lain tetap frame pertama | ✅ GIF/WebP/AVIF animasi (loader `page`/`n`, frame ditumpuk vertikal) |
 
 Catatan AVIF untuk backend vips: encoder dipilih lewat env, bukan URL.
 `IOIMG_AVIF_ENCODER=auto|libavif|vips` (default `auto` = libavif bila binary

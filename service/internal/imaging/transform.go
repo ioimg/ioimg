@@ -42,16 +42,18 @@ func AvailableFormats() map[ops.Format]bool {
 	}
 }
 
-// Decode sniffs and decodes an image. Only the first frame of animations is
-// decoded; metadata is deliberately discarded.
-func Decode(data []byte) (image.Image, Info, error) { return decode(data, true) }
+// Decode sniffs and decodes an image. For GIFs it selects the first frame;
+// other multi-frame formats keep their first frame because image/gif is the
+// only multi-frame decoder linked into the pure-Go build.
+func Decode(data []byte) (image.Image, Info, error) { return decode(data, true, ops.Ops{}) }
 
-// DecodeWithOptions decodes with the request's orientation policy (ar_*).
+// DecodeWithOptions decodes with the request's orientation policy (ar_*) and
+// GIF page selection (pg_/pgs_/da_).
 func DecodeWithOptions(data []byte, o ops.Ops) (image.Image, Info, error) {
-	return decode(data, o.AutoRotates())
+	return decode(data, o.AutoRotates(), o)
 }
 
-func decode(data []byte, autoRotate bool) (image.Image, Info, error) {
+func decode(data []byte, autoRotate bool, o ops.Ops) (image.Image, Info, error) {
 	if len(data) == 0 {
 		return nil, Info{}, ErrDecode
 	}
@@ -65,11 +67,16 @@ func decode(data []byte, autoRotate bool) (image.Image, Info, error) {
 	if cfg.Width > MaxSide || cfg.Height > MaxSide || cfg.Width*cfg.Height > MaxPixels {
 		return nil, Info{}, ErrDimension
 	}
-	animated := false
 	if format == "gif" {
-		if g, err := gif.DecodeAll(bytes.NewReader(data)); err == nil {
-			animated = len(g.Image) > 1
+		img, info, err := decodeGIF(data, o)
+		if err != nil {
+			return nil, Info{}, err
 		}
+		if autoRotate {
+			img = applyOrientation(img, exifOrientation(data))
+		}
+		info.Bytes = len(data)
+		return img, info, nil
 	}
 	img, decFormat, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
@@ -86,7 +93,6 @@ func decode(data []byte, autoRotate bool) (image.Image, Info, error) {
 		Height:   img.Bounds().Dy(),
 		Format:   format,
 		HasAlpha: hasAlpha(img),
-		Animated: animated,
 		Bytes:    len(data),
 	}
 	return img, info, nil

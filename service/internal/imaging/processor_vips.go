@@ -87,12 +87,12 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 		return processThumbnail(src, o, opts, plan)
 	}
 	start := time.Now()
-	img, err := vips.NewImageFromBuffer(src)
+	img, animated, rotated, err := loadVipsForOps(src, o)
 	if err != nil {
-		return Result{}, ErrDecode
+		return Result{}, err
 	}
 	defer img.Close()
-	if o.AutoRotates() {
+	if o.AutoRotates() && !rotated {
 		if err := img.AutoRotate(); err != nil {
 			return Result{}, ErrDecode
 		}
@@ -102,7 +102,7 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 		Height:   img.Height(),
 		Format:   imageTypeName(img.Format()),
 		HasAlpha: img.HasAlpha(),
-		Animated: img.Pages() > 1,
+		Animated: animated,
 		Bytes:    len(src),
 	}
 	if info.Width > MaxSide || info.Height > MaxSide || info.Width*info.Height > MaxPixels {
@@ -242,6 +242,130 @@ func enforceMinimumVips(img *vips.ImageRef, o ops.Ops) error {
 		return nil
 	}
 	return img.ResizeWithVScale(f, f, kernelFor(o.Algorithm))
+}
+
+// loadVipsForOps loads a source with imgproxy page selection. The fast path is
+// the plain lazy load every request used before pg_/pgs_/da_ existed; selection
+// first probes the frame count so an out-of-range page can fall back to the last
+// available frame instead of failing the decode.
+func loadVipsForOps(src []byte, o ops.Ops) (*vips.ImageRef, bool, bool, error) {
+	needsSelection := o.DisableAnimation || o.PageIndex() != 0 || o.PageCount() > 1
+	if !needsSelection {
+		img, err := vips.NewImageFromBuffer(src)
+		if err != nil {
+			return nil, false, false, ErrDecode
+		}
+		return img, img.Pages() > 1, false, nil
+	}
+
+	total, err := vipsPageCount(src)
+	if err != nil {
+		return nil, false, false, ErrDecode
+	}
+	if total < 1 {
+		total = 1
+	}
+	page, pages := o.PageIndex(), o.PageCount()
+	if pages > ops.MaxPages {
+		return nil, false, false, fmt.Errorf("pgs must be at most %d", ops.MaxPages)
+	}
+	if page >= total {
+		page = total - 1
+	}
+	if pages > total-page {
+		pages = total - page
+	}
+	if pages < 1 {
+		pages = 1
+	}
+	animated := total > 1 && !o.DisableAnimation
+	if pages == 1 {
+		img, err := loadVipsPage(src, page, o.AutoRotates())
+		if err != nil {
+			return nil, false, false, ErrDecode
+		}
+		return img, animated, true, nil
+	}
+	img, err := stackVipsPages(src, page, pages, o.AutoRotates())
+	if err != nil {
+		return nil, false, false, err
+	}
+	return img, animated, true, nil
+}
+
+// vipsPageCount reads the frame count without materialising the frames.
+func vipsPageCount(src []byte) (int, error) {
+	img, err := vips.NewImageFromBuffer(src)
+	if err != nil {
+		return 0, err
+	}
+	defer img.Close()
+	return img.Pages(), nil
+}
+
+// loadVipsPage decodes exactly one frame. NumPages=1 keeps every frame as a
+// separate decode, which is the cost model pg_/pgs_ is documented with.
+func loadVipsPage(src []byte, page int, autoRotate bool) (*vips.ImageRef, error) {
+	params := vips.NewImportParams()
+	params.Page.Set(page)
+	params.NumPages.Set(1)
+	params.AutoRotate.Set(autoRotate)
+	return vips.LoadImageFromBuffer(src, params)
+}
+
+// stackVipsPages stacks consecutive frames vertically, left-aligned, in source
+// order. Each frame is loaded separately (n=1), composited in order, and closed
+// after the composite pass, so memory stays bounded by the requested pages
+// rather than the full animation.
+func stackVipsPages(src []byte, page, pages int, autoRotate bool) (*vips.ImageRef, error) {
+	frames := make([]*vips.ImageRef, 0, pages)
+	width, totalHeight := 0, 0
+	for i := 0; i < pages; i++ {
+		frame, err := loadVipsPage(src, page+i, autoRotate)
+		if err != nil {
+			for _, f := range frames {
+				f.Close()
+			}
+			return nil, ErrDecode
+		}
+		frames = append(frames, frame)
+		if width == 0 {
+			width = frame.Width()
+		}
+		totalHeight += frame.Height()
+		if width > MaxSide || totalHeight > MaxSide || width*totalHeight > MaxPixels {
+			for _, f := range frames {
+				f.Close()
+			}
+			return nil, ErrDimension
+		}
+	}
+
+	canvas := frames[0]
+	rest := frames[1:]
+	defer func() {
+		for _, f := range rest {
+			f.Close()
+		}
+	}()
+	firstHeight := canvas.Height()
+	bg := &vips.ColorRGBA{A: 0}
+	if !canvas.HasAlpha() {
+		bg = &vips.ColorRGBA{}
+	}
+	if err := canvas.EmbedBackgroundRGBA(0, 0, width, totalHeight, bg); err != nil {
+		canvas.Close()
+		return nil, err
+	}
+	y := firstHeight
+	for _, frame := range rest {
+		if err := canvas.Composite(frame, vips.BlendModeOver, 0, y); err != nil {
+			canvas.Close()
+			return nil, err
+		}
+		y += frame.Height()
+	}
+	return canvas, nil
 }
 
 // probeDimensions reads only the header: NewImageFromBuffer is lazy, so this

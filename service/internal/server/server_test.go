@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"io"
 	"log/slog"
@@ -279,6 +280,81 @@ func TestErrorsAndJSONMode(t *testing.T) {
 		t.Fatalf("unexpected metadata: %+v", meta)
 	}
 	resp.Body.Close()
+}
+
+func animatedGIFBytes(t *testing.T) []byte {
+	t.Helper()
+	const w, h = 20, 10
+	palette := color.Palette{
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{G: 255, A: 255},
+		color.RGBA{B: 255, A: 255},
+	}
+	g := &gif.GIF{Config: image.Config{Width: w, Height: h, ColorModel: palette}}
+	for i := range palette {
+		frame := image.NewPaletted(image.Rect(0, 0, w, h), palette)
+		for p := 0; p < len(frame.Pix); p++ {
+			frame.Pix[p] = uint8(i)
+		}
+		g.Image = append(g.Image, frame)
+		g.Delay = append(g.Delay, 10)
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestJSONAnimationReporting pins the f_json contract for pg_/pgs_/da_: an
+// animated source reports isAnimated=true, and da_1 suppresses it.
+func TestJSONAnimationReporting(t *testing.T) {
+	h := newHarness(t, nil)
+	gifData := animatedGIFBytes(t)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/gif")
+		_, _ = w.Write(gifData)
+	}))
+	t.Cleanup(origin.Close)
+	source := origin.URL + "/anim.gif"
+
+	meta := func(path string) map[string]any {
+		t.Helper()
+		resp := h.get(t, path, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s: status %d", path, resp.StatusCode)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	full := meta("/f_json/" + source)
+	if full["isAnimated"] != true {
+		t.Fatalf("f_json isAnimated = %v, want true", full["isAnimated"])
+	}
+	if full["height"].(float64) != 10 {
+		t.Fatalf("f_json height = %v, want the first frame height 10", full["height"])
+	}
+
+	paged := meta("/pg_1,pgs_2,f_json/" + source)
+	if paged["isAnimated"] != true {
+		t.Fatalf("paged isAnimated = %v, want true", paged["isAnimated"])
+	}
+	if paged["height"].(float64) != 20 {
+		t.Fatalf("paged height = %v, want two stacked frames (20)", paged["height"])
+	}
+
+	still := meta("/da_1,f_json/" + source)
+	if still["isAnimated"] != false {
+		t.Fatalf("da_1 isAnimated = %v, want false", still["isAnimated"])
+	}
+	if still["height"].(float64) != 10 {
+		t.Fatalf("da_1 height = %v, want the first frame height 10", still["height"])
+	}
 }
 
 func TestQueryMode(t *testing.T) {
