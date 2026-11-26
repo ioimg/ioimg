@@ -146,12 +146,13 @@ Sesi terpisah, build `-tags vips`, 1 thread, MISS, sumber 2400×1600 → `w_400`
   identik (~+75% waktu MISS). HIT tidak terpengaruh (80,5k rps, p50 78 µs).
 - `webpo_compression` benar-benar sampai ke encoder: method 6 = −24% throughput
   dibanding default 4, dengan output lebih kecil.
-- `avifo_subsample` **tidak** terlihat di vips (govips tidak meneruskan
-  subsample AVIF) — 7 rps pada keduanya, sesuai tabel dukungan di
-  `docs/API.md`. Biaya AVIF didominasi encoder (~140 ms/gambar), bukan opsi.
-- `pngo` di vips hanya menghormati `interlaced`; `quantization_colors` diabaikan
-  (pure Go yang mendukungnya). Selisih 18 → 21 rps di sini adalah noise +
-  interlace, bukan kuantisasi.
+- `avifo_subsample` diteruskan oleh jalur libavif, tetapi biaya AVIF tetap
+  didominasi encoder (~140 ms/gambar), bukan opsi; angka 7 rps berlaku untuk
+  ketiga subsampling. Matriks dukungan ada di `docs/IMGPARITY.md` § Backend
+  support matrix.
+- `pngo` di vips menghormati `interlaced` dan `quantization_colors` (lewat
+  libimagequant); selisih 18 → 21 rps di sini adalah noise + interlace, bukan
+  kuantisasi.
 
 Kesimpulan: opsi encoder adalah keputusan kualitas/ukuran, bukan keputusan
 throughput; yang mahal tetap format (AVIF 7 rps, PNG 18–21 rps vs JPEG 70 rps

@@ -14,3 +14,7 @@ const libavifEncoder = false
 func encodeAVIFLibavif(*vips.ImageRef, int, bool) ([]byte, error) {
 	return nil, errors.New("avif: libavif support is not compiled in")
 }
+
+func encodeAVIFLibavifSubsample(*vips.ImageRef, int, bool, *int) ([]byte, bool, error) {
+	return nil, false, errors.New("avif: libavif support is not compiled in")
+}

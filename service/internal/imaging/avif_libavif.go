@@ -13,10 +13,11 @@ package imaging
 // costs ~4x the encode time for the same bytes; libavif exposes it as `speed`.
 static avifResult encodeAVIF(const uint8_t *rgba, int width, int height,
                              int speed, int quality, int threads,
+                             int pixelFormat,
                              const uint8_t *exif, size_t exifLen,
                              const uint8_t *icc, size_t iccLen,
                              uint8_t **out, size_t *outLen) {
-	avifImage *img = avifImageCreate(width, height, 8, AVIF_PIXEL_FORMAT_YUV444);
+	avifImage *img = avifImageCreate(width, height, 8, (avifPixelFormat)pixelFormat);
 	if (!img) {
 		return AVIF_RESULT_OUT_OF_MEMORY;
 	}
@@ -131,16 +132,45 @@ func avifSpeedLevel() int {
 // keepMetadata is set, the source EXIF and ICC blobs are attached to the AVIF
 // container; the libvips heifsave path is not involved.
 func encodeAVIFLibavif(img *vips.ImageRef, quality int, keepMetadata bool) ([]byte, error) {
+	out, _, err := encodeAVIFLibavifSubsample(img, quality, keepMetadata, nil)
+	return out, err
+}
+
+// avifSubsamplePixelFormat maps the ops-level 0/1/2 subsampling value to an
+// avifPixelFormat. 4:4:4 is the default and also the lossless fallback for
+// 4:2:0 when the source has an odd dimension that chroma subsampling cannot
+// represent. The bool reports whether that fallback happened.
+func avifSubsamplePixelFormat(width, height int, subsample *int) (int, bool) {
+	if subsample == nil {
+		return int(C.AVIF_PIXEL_FORMAT_YUV444), false
+	}
+	switch *subsample {
+	case 1:
+		return int(C.AVIF_PIXEL_FORMAT_YUV422), false
+	case 2:
+		if width%2 != 0 || height%2 != 0 {
+			return int(C.AVIF_PIXEL_FORMAT_YUV444), true
+		}
+		return int(C.AVIF_PIXEL_FORMAT_YUV420), false
+	default:
+		return int(C.AVIF_PIXEL_FORMAT_YUV444), false
+	}
+}
+
+// encodeAVIFLibavifSubsample is the subsampling-aware form of
+// encodeAVIFLibavif. It returns fellBack=true when a requested 4:2:0 had to be
+// encoded as 4:4:4 because the image has an odd width or height.
+func encodeAVIFLibavifSubsample(img *vips.ImageRef, quality int, keepMetadata bool, subsample *int) ([]byte, bool, error) {
 	goImg, err := img.ToGoImage()
 	if err != nil {
-		return nil, fmt.Errorf("avif: %w", err)
+		return nil, false, fmt.Errorf("avif: %w", err)
 	}
 	rgba, ok := goImg.(*image.NRGBA)
 	if !ok {
-		return nil, errors.New("avif: unexpected image type")
+		return nil, false, errors.New("avif: unexpected image type")
 	}
 	if rgba.Rect.Dx() == 0 || rgba.Rect.Dy() == 0 || len(rgba.Pix) == 0 {
-		return nil, errors.New("avif: empty image")
+		return nil, false, errors.New("avif: empty image")
 	}
 
 	var exif, icc []byte
@@ -150,20 +180,22 @@ func encodeAVIFLibavif(img *vips.ImageRef, quality int, keepMetadata bool) ([]by
 	}
 	exifPtr, exifLen := cBytes(exif)
 	iccPtr, iccLen := cBytes(icc)
+	pixelFormat, fellBack := avifSubsamplePixelFormat(rgba.Rect.Dx(), rgba.Rect.Dy(), subsample)
 	var out *C.uint8_t
 	var outLen C.size_t
 	res := C.encodeAVIF(
 		(*C.uint8_t)(unsafe.Pointer(&rgba.Pix[0])),
 		C.int(rgba.Rect.Dx()), C.int(rgba.Rect.Dy()),
 		C.int(avifSpeedLevel()), C.int(quality), C.int(1),
+		C.int(pixelFormat),
 		exifPtr, exifLen, iccPtr, iccLen,
 		&out, &outLen,
 	)
 	if res != C.AVIF_RESULT_OK {
-		return nil, fmt.Errorf("avif: encode failed (avifResult %d)", int(res))
+		return nil, false, fmt.Errorf("avif: encode failed (avifResult %d)", int(res))
 	}
 	defer C.free(unsafe.Pointer(out))
-	return C.GoBytes(unsafe.Pointer(out), C.int(outLen)), nil
+	return C.GoBytes(unsafe.Pointer(out), C.int(outLen)), fellBack, nil
 }
 
 func cBytes(b []byte) (*C.uint8_t, C.size_t) {

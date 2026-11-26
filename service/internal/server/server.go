@@ -480,6 +480,9 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		if _, ok := res.timings["fallback"]; ok {
 			h.Set("X-IOIMG-Fallback", "1")
 		}
+		if _, ok := res.timings["avif_subsample_fallback"]; ok {
+			h.Set("X-IOIMG-AVIF-Subsample-Fallback", "1")
+		}
 		h.Set("Server-Timing", serverTiming(res.timings))
 		h.Set("X-IOIMG-Transform-Ms", strconv.FormatFloat(res.timings["total"], 'f', 2, 64))
 	}

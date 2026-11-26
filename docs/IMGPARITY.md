@@ -69,6 +69,30 @@ Konsekuensinya untuk dokumen ini:
 
 ---
 
+## Backend support matrix
+
+Dua backend (pure Go dan libvips) tidak harus identik byte-per-byte, tetapi
+opsi yang tidak bisa dihormati tidak boleh diam-diam diabaikan. Tabel ini
+mencantumkan setiap opsi encoder di `service/pkg/ops/codec.go` dan perbedaan
+lain yang terlihat oleh pengguna.
+
+| Opsi / fitur | Pure Go | libvips (`-tags vips`) | Alasan / perilaku |
+| --- | --- | --- | --- |
+| `pngo_interlaced` | ⛔ | ✅ | Encoder PNG Go tidak punya interlace; vips menulis flag Adam7. |
+| `pngo_quantize` | ✅ | ✅ | Keduanya menghasilkan PNG palet; Go memakai kuantisasi seragam 3D, vips memakai libimagequant (mesin yang sama dengan `pngsave --palette`). |
+| `pngo_quantization_colors` | ✅ | ✅ | Batas 2..256 warna dihormati kedua backend; vips memakai `liq_set_max_colors` karena govips 2.20 tidak mengekspos jumlah warna. |
+| `webpo_compression` | ✅ | ✅ | Method libwebp 0..6 ↔ reduction effort libvips 0..6. |
+| `webpo_smart_subsample` | ⛔ | ⛔ | Tidak diekspos encoder Go maupun govips 2.20. |
+| `webpo_preset` | ⛔ | ⛔ | Tidak diekspos encoder Go maupun govips 2.20. |
+| `avifo_subsample` | ✅ | ✅ (libavif) / ⛔ (heifsave) | libavif memilih YUV444/422/420; jalur `IOIMG_AVIF_ENCODER=vips` menolak opsi ini dengan error yang menyebut backend, bukan mengabaikannya. |
+| Default `avifo` tanpa opsi | 4:2:0 (encoder WASM) | 4:4:4 (libavif) | Default lama dipertahankan agar byte request tanpa opsi tidak berubah. |
+| `avifo_subsample=2` ganjil | 4:2:0 | 4:4:4 + `X-IOIMG-AVIF-Subsample-Fallback: 1` | 4:2:0 tidak bisa merepresentasikan lebar/tinggi ganjil tanpa kehilangan; libavif jatuh ke 4:4:4 dan mencatat fallback di timing/header. |
+| `ra_lanczos2`/`ra_lanczos3` | ✅ (Lanczos→Catmull-Rom) | ✅ (kernel Lanczos asli) | Pure Go tidak punya kernel Lanczos; hasilnya tetap deterministik tetapi bukan filter yang sama. |
+| `g_auto` | 🟡 (center) | ✅ (attention) | Deteksi attention butuh libvips; pure Go memakai fallback center yang didokumentasikan. |
+| `pg`/`pgs`/`da` | ✅ GIF saja | ✅ GIF/WebP/AVIF animasi | Pure Go hanya punya decoder GIF multi-frame; frame pertama dipakai untuk format lain. |
+
+---
+
 ## 2. Matriks lengkap
 
 ### 2.1 Format gambar
@@ -129,8 +153,8 @@ Konsekuensinya untuk dokumen ini:
 | Strip ICC / konversi sRGB | ✅ | encoder Go/vips membuang profil |
 | Advanced JPEG (mozjpeg) | ⛔ | butuh encoder mozjpeg/libvips (Pro di imgproxy) |
 | Advanced WebP options | ✅ | `webpo_compression` (method 0..6) di kedua backend; `smart_subsample`/`preset` belum |
-| Advanced PNG options | 🟡 | `pngo_interlaced` (vips saja), `pngo_quantize`/`quantization_colors` (pure Go saja) |
-| Advanced AVIF options | 🟡 | `avifo_subsample` 4:4:4/4:2:2/4:2:0 (pure Go saja; govips tidak meneruskan) |
+| Advanced PNG options | ✅ | `pngo_interlaced` hanya di vips; `pngo_quantize`/`quantization_colors` di kedua backend (lihat [Backend support matrix](#backend-support-matrix)) |
+| Advanced AVIF options | ✅ | `avifo_subsample` 4:4:4/4:2:2/4:2:0 di pure Go dan libavif; jalur heifsave menolak dengan error |
 | SVG minification | 🔒 | SVG ditolak |
 
 ### 2.4 Smart features

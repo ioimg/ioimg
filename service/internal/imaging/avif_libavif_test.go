@@ -94,3 +94,67 @@ func TestAvifEndToEndUsable(t *testing.T) {
 		t.Fatalf("format = %v, want AVIF", got)
 	}
 }
+
+// TestAvifLibavifSubsampling pins that avifo_subsample reaches libavif: the
+// three YUV formats produce different bytes, and the default stays 4:4:4.
+func TestAvifLibavifSubsampling(t *testing.T) {
+	ensureVips()
+	t.Setenv("IOIMG_AVIF_ENCODER", "")
+	t.Setenv("IOIMG_AVIF_SPEED", "")
+	src := deterministicSource(t)
+
+	encode := func(raw string) []byte {
+		t.Helper()
+		o, err := ops.Parse(raw, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		res, err := DefaultProcessor().Process(src, o, Options{OutFormat: ops.FormatAVIF, Quality: 60})
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		return res.Data
+	}
+
+	defaultOut := encode("w_64,h_48,c_fill,f_avif,q_60")
+	out444 := encode("w_64,h_48,c_fill,f_avif,q_60,avifo_0")
+	out422 := encode("w_64,h_48,c_fill,f_avif,q_60,avifo_1")
+	out420 := encode("w_64,h_48,c_fill,f_avif,q_60,avifo_2")
+
+	if !bytes.Equal(defaultOut, out444) {
+		t.Fatal("default AVIF is not 4:4:4")
+	}
+	if bytes.Equal(out444, out422) || bytes.Equal(out444, out420) || bytes.Equal(out422, out420) {
+		t.Fatalf("subsampling formats produced identical bytes: 444=%d 422=%d 420=%d",
+			len(out444), len(out422), len(out420))
+	}
+}
+
+// TestAvifLibavifOddSizeFallback pins the documented degradation: 4:2:0 on an
+// odd-sized image falls back to 4:4:4, succeeds, and records the fallback.
+func TestAvifLibavifOddSizeFallback(t *testing.T) {
+	ensureVips()
+	t.Setenv("IOIMG_AVIF_ENCODER", "")
+	src := deterministicSource(t)
+	process := func(raw string) Result {
+		t.Helper()
+		o, err := ops.Parse(raw, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		res, err := DefaultProcessor().Process(src, o, Options{OutFormat: ops.FormatAVIF, Quality: 60})
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		return res
+	}
+
+	fallback := process("w_63,h_47,c_fill,f_avif,q_60,avifo_2")
+	if got := fallback.Timings["avif_subsample_fallback"]; got != 1 {
+		t.Fatalf("fallback timing = %v, want 1", got)
+	}
+	explicit444 := process("w_63,h_47,c_fill,f_avif,q_60,avifo_0")
+	if !bytes.Equal(fallback.Data, explicit444.Data) {
+		t.Fatal("odd-size 4:2:0 fallback did not encode as 4:4:4")
+	}
+}

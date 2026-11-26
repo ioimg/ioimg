@@ -150,17 +150,22 @@ dengan format output yang diminta.
 `gr` ikut round-trip vips yang sama dengan `dt`/`col` (satu `ToImage` per
 request, hanya saat dipakai).
 
-**Dukungan opsi encoder per backend** — yang tidak didukung tidak diam-diam
-diklaim:
+**Dukungan opsi encoder per backend** — matriks lengkap (termasuk opsi yang
+tidak bisa dihormati dan alasannya) ada di
+[`IMGPARITY.md` § Backend support matrix](IMGPARITY.md#backend-support-matrix).
+Ringkasnya:
 
 | opsi | pure Go | libvips (`-tags vips`) |
 | --- | --- | --- |
 | `pngo` `interlaced` | tidak didukung (encoder Go tidak punya interlace) | ✅ |
-| `pngo` `quantize`/`quantization_colors` | ✅ (`image.Paletted`, kuantisasi seragam) | tidak didukung (govips tidak mengekspos palet) |
+| `pngo` `quantize`/`quantization_colors` | ✅ (`image.Paletted`, kuantisasi seragam) | ✅ (libimagequant, batas warna dihormati) |
 | `webpo` `compression` | ✅ (`libwebp` method 0..6) | ✅ (reduction effort 0..6) |
 | `webpo` `smart_subsample`, `preset` | tidak didukung | tidak didukung |
-| `avifo` `subsample` | ✅ (4:4:4 / 4:2:2 / 4:2:0) | tidak didukung (govips tidak meneruskan subsample AVIF) |
+| `avifo` `subsample` | ✅ (4:4:4 / 4:2:2 / 4:2:0) | ✅ via libavif; jalur heifsave menolak dengan error |
 | `pg`/`pgs`/`da` | ✅ GIF saja; format multi-frame lain tetap frame pertama | ✅ GIF/WebP/AVIF animasi (loader `page`/`n`, frame ditumpuk vertikal) |
+| `dpi` | ✅ JPEG (`JFIF`) + PNG (`pHYs`) | ✅ (pass post-encode yang sama) |
+| `hs` | ✅ semua algoritma (constant-time compare) | ✅ (sama, sebelum decode) |
+| `fiu` | ✅ + SSRF guard + metrik `ioimg_fallback_total` | ✅ |
 
 Catatan AVIF untuk backend vips: encoder dipilih lewat env, bukan URL.
 `IOIMG_AVIF_ENCODER=auto|libavif|vips` (default `auto` = libavif bila binary
@@ -168,9 +173,10 @@ dibangun dengan `-tags libavif`), `IOIMG_AVIF_SPEED=0..10` memetakan langsung ke
 `cpu-used` libaom (default 9), dan `IOIMG_AVIF_EFFORT=0..9` hanya dipakai jalur
 `vips`. libavif ~4× lebih cepat pada byte yang hampir sama; lihat
 [`benchmarks/vs-imgproxy.md`](benchmarks/vs-imgproxy.md) §7.
-| `dpi` | ✅ JPEG (`JFIF`) + PNG (`pHYs`) | ✅ (pass post-encode yang sama) |
-| `hs` | ✅ semua algoritma (constant-time compare) | ✅ (sama, sebelum decode) |
-| `fiu` | ✅ + SSRF guard + metrik `ioimg_fallback_total` | ✅ |
+
+`avifo_subsample` 4:2:0 pada gambar berlebar/tinggi ganjil tidak gagal: libavif
+turun ke 4:4:4 dan respons mencatat `X-IOIMG-AVIF-Subsample-Fallback: 1`
+(header ini tidak memengaruhi cache key).
 
 `ra`, `mb`, `fn`, `cb`, `mw`, `mh`, `ar`, `sm`, `dt`, `col`, `gr`, `pngo`, `webpo`, `avifo` mengikuti penamaan imgproxy
 supaya migrasi tidak perlu menerjemahkan URL. Nilai default tidak pernah masuk

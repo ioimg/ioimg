@@ -5,6 +5,7 @@ package imaging
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -143,5 +144,34 @@ func TestVipsWatermarkParity(t *testing.T) {
 	}
 	if got := color.NRGBAModel.Convert(img.At(32, 24)).(color.NRGBA); got.R < 200 {
 		t.Fatalf("centre pixel %+v, want the red watermark", got)
+	}
+}
+
+// TestVipsPNGQuantize pins that pngo_ quantize is honoured on the vips backend:
+// the output must be an indexed PNG with at most the requested number of
+// colours, the same URL semantics as the pure-Go path.
+func TestVipsPNGQuantize(t *testing.T) {
+	ensureVips()
+	src := deterministicSource(t)
+	for _, n := range []int{8, 64, 256} {
+		o, err := ops.Parse(fmt.Sprintf("w_64,h_48,c_fill,f_png,pngo_1:1:%d", n), nil)
+		if err != nil {
+			t.Fatalf("n=%d: %v", n, err)
+		}
+		res, err := DefaultProcessor().Process(src, o, Options{OutFormat: ops.FormatPNG, Quality: 80})
+		if err != nil {
+			t.Fatalf("n=%d: %v", n, err)
+		}
+		img, err := png.Decode(bytes.NewReader(res.Data))
+		if err != nil {
+			t.Fatalf("n=%d: decode: %v", n, err)
+		}
+		pal, ok := img.(*image.Paletted)
+		if !ok {
+			t.Fatalf("n=%d: expected paletted output, got %T", n, img)
+		}
+		if len(pal.Palette) == 0 || len(pal.Palette) > n {
+			t.Fatalf("n=%d: palette has %d entries", n, len(pal.Palette))
+		}
 	}
 }

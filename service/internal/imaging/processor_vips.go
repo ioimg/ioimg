@@ -143,6 +143,7 @@ func (vipsProcessor) Process(src []byte, o ops.Ops, opts Options) (Result, error
 		return Result{}, err
 	}
 	timings["encode"] = elapsed(start)
+	recordAVIFSubsampleFallback(timings, o, chosen, img.Width(), img.Height())
 	res.Data = out
 	res.Format = chosen
 	if chosen != opts.OutFormat {
@@ -214,6 +215,7 @@ func processThumbnail(src []byte, o ops.Ops, opts Options, plan thumbnailOp) (Re
 		return Result{}, err
 	}
 	timings["encode"] = elapsed(start)
+	recordAVIFSubsampleFallback(timings, o, chosen, img.Width(), img.Height())
 	res.Data = out
 	res.Format = chosen
 	if chosen != opts.OutFormat {
@@ -835,6 +837,9 @@ func encodeBest(img *vips.ImageRef, o ops.Ops, opts Options) ([]byte, ops.Format
 	var bestFormat ops.Format
 	var firstErr error
 	for _, format := range candidates {
+		if format == ops.FormatAVIF && o.AVIFEncoder != nil && o.AVIFEncoder.Subsample != nil && !avifUsesLibavif() {
+			return nil, "", fmt.Errorf("avifo_subsample is not supported by the libvips heifsave backend (build with -tags libavif or unset IOIMG_AVIF_ENCODER=vips)")
+		}
 		target := img
 		closeTarget := false
 		if format == ops.FormatJPEG && img.HasAlpha() {
@@ -982,14 +987,60 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 		params.Effort = *o.WebPEncoder.Compression
 	}
 
+	if format == vips.ImageTypePNG && o.PNGEncoder != nil && isTrue(o.PNGEncoder.Quantize) {
+		pal, err := quantizeVipsPNG(img, pngColors(o.PNGEncoder.Colors))
+		if err != nil {
+			return nil, err
+		}
+		qimg, err := vips.NewImageFromGoImage(pal)
+		if err != nil {
+			return nil, fmt.Errorf("vips pngo quantization: %w", err)
+		}
+		defer qimg.Close()
+		if o.KeepMetadata {
+			// The paletted image is new pixels; carry the source metadata blobs
+			// over so pngo does not silently defeat sm_0.
+			if exif := img.GetBlob("exif-data"); len(exif) > 0 {
+				qimg.SetBlob("exif-data", exif)
+			}
+			if icc := img.GetBlob("icc-profile-data"); len(icc) > 0 {
+				qimg.SetBlob("icc-profile-data", icc)
+			}
+			if xres := img.GetDouble("xres"); xres > 0 {
+				qimg.SetDouble("xres", xres)
+			}
+			if yres := img.GetDouble("yres"); yres > 0 {
+				qimg.SetDouble("yres", yres)
+			}
+		}
+		// Palette makes libvips emit an indexed PNG; the image already has at
+		// most the requested number of colours, so this pass only writes them.
+		out, _, err := qimg.ExportPng(&vips.PngExportParams{
+			StripMetadata: !o.KeepMetadata,
+			Compression:   params.Compression,
+			Interlace:     params.Interlaced,
+			Palette:       true,
+			Dither:        0,
+			Quality:       100,
+			Bitdepth:      8,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return applyDPI(out, format, o)
+	}
+
 	var out []byte
 	if format == vips.ImageTypeAVIF {
 		if avifUsesLibavif() {
-			out, err := encodeAVIFLibavif(img, quality, o.KeepMetadata)
+			out, _, err := encodeAVIFLibavifSubsample(img, quality, o.KeepMetadata, avifSubsampleArg(o))
 			if err != nil {
 				return nil, err
 			}
 			return applyDPI(out, format, o)
+		}
+		if o.AVIFEncoder != nil && o.AVIFEncoder.Subsample != nil {
+			return nil, fmt.Errorf("avifo_subsample is not supported by the libvips heifsave backend (build with -tags libavif or unset IOIMG_AVIF_ENCODER=vips)")
 		}
 		// ExportParams.Speed is deprecated and does not reach libheif; Effort is
 		// the knob that actually changes encode time.
@@ -1009,6 +1060,30 @@ func exportAt(img *vips.ImageRef, format vips.ImageType, quality int, o ops.Ops)
 		return nil, err
 	}
 	return applyDPI(out, format, o)
+}
+
+// avifSubsampleArg returns the requested AVIF subsampling, if any.
+func avifSubsampleArg(o ops.Ops) *int {
+	if o.AVIFEncoder == nil {
+		return nil
+	}
+	return o.AVIFEncoder.Subsample
+}
+
+// recordAVIFSubsampleFallback records the documented degradation where a
+// requested 4:2:0 cannot represent an odd-sized image and the encoder uses
+// 4:4:4 instead of failing.
+func recordAVIFSubsampleFallback(timings map[string]float64, o ops.Ops, chosen ops.Format, width, height int) {
+	if chosen != ops.FormatAVIF || !avifUsesLibavif() {
+		return
+	}
+	sub := avifSubsampleArg(o)
+	if sub == nil || *sub != 2 {
+		return
+	}
+	if width%2 != 0 || height%2 != 0 {
+		timings["avif_subsample_fallback"] = 1
+	}
 }
 
 // applyDPI adds the density metadata libvips strips on export.

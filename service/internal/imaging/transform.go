@@ -824,19 +824,6 @@ func cropRect(src image.Image, r image.Rectangle) image.Image {
 	return dst
 }
 
-func isTrue(b *bool) bool { return b != nil && *b }
-
-// pngColors normalises pngo quantization_colors: 0 means the encoder default.
-func pngColors(n int) int {
-	if n < 2 {
-		return 256
-	}
-	if n > 256 {
-		return 256
-	}
-	return n
-}
-
 // toPalettedN quantises to roughly n colours by splitting each channel into
 // k levels where k^3 >= n. It is deliberately simple and deterministic: two
 // processes must produce the same bytes for the same URL and cache key.
