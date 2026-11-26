@@ -47,9 +47,13 @@ func (c *watermarkCache) get(ctx context.Context, url string, load func(context.
 	return img, err
 }
 
-// watermarkFor resolves the watermark image for a request: wmu_ wins, then the
-// configured default. Both go through the SSRF-guarded fetcher.
-func (s *Server) watermarkFor(ctx context.Context, url string) (image.Image, error) {
+// watermarkFor resolves the watermark image for a request. Text watermarks are
+// rendered locally and never touch the fetcher; image watermarks (wmu_, then the
+// configured default) go through the SSRF-guarded fetcher.
+func (s *Server) watermarkFor(ctx context.Context, text, url string) (image.Image, error) {
+	if text != "" {
+		return imaging.RenderWatermarkText(text), nil
+	}
 	if url == "" {
 		return nil, nil
 	}

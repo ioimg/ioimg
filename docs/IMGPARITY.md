@@ -19,7 +19,7 @@ rencana. Item 🟡/⛔ adalah backlog, bukan klaim marketing.
 | Format web modern | ✅ | JPEG/PNG/WebP/AVIF/GIF + `f_auto` |
 | Format input luas | 🟡 | +BMP/TIFF; belum JXL/HEIC/ICO/PSD/PDF/video |
 | Filter dasar | ✅ | blur, sharpen, pixelate, brightness, contrast, saturation, monochrome, trim |
-| Watermark | 🟡 | `wm_` + `wmu_` (gambar) selesai: opacity/9 posisi/repeat/chessboard/offset/scale, kedua backend. Belum: teks (`wmt`, butuh font/Pango), ukuran eksplisit (`wms`), rotasi (`wmr`), shadow (`wmsh`) |
+| Watermark | ✅ | `wm_` + `wmu_`/`wmt_` + `wms`/`wmr`/`wmsh`: opacity/9 posisi/repeat/chessboard/offset/scale, teks lokal, ukuran fit+enlarge, rotasi, shadow; compositing bersama di kedua backend |
 | Transform lanjutan | 🟡 | duotone, colorize, gradient ✅ (ketiganya **Pro** imgproxy); chained pipeline belum |
 | Smart/AI | ⛔ | smart crop, face crop, object crop/blur, autoquality DSSIM |
 | Keamanan URL | 🟡 | signing + expiry + allowlist + SSRF; belum enkripsi source/hashsum/auth header |
@@ -31,7 +31,7 @@ rencana. Item 🟡/⛔ adalah backlog, bukan klaim marketing.
 **Kesimpulan jujur:** ioimg bisa mengimbangi **inti OSS imgproxy** untuk
 resize/filter/format web, keamanan URL, cache, dan operasi. ioimg **belum bisa**
 mengimbangi seluruh halaman fitur imgproxy hari ini, terutama codec eksotis,
-watermark, chained pipeline, smart/AI crop, dan media (PDF/video/PSD). Sebagian
+chained pipeline, smart/AI crop, dan media (PDF/video/PSD). Sebagian
 besar sisanya bisa ditambah bertahap; beberapa hanya realistis di atas libvips
 atau service terpisah.
 
@@ -103,8 +103,9 @@ Konsekuensinya untuk dokumen ini:
 | Flattening | ✅ | `fl`/`flatten` untuk semua format output; default putih, dijalankan setelah extend |
 | Flatten background semi-transparan | ✅ | `bg_RRGGBBAA` / `bg_R:G:B` + `bga` (alpha 0..1), identik di backend Go dan vips |
 | Watermark image | ✅ | `wm_` + `wmu_`; kompositing di `internal/imaging/watermark.go`, dipakai kedua backend |
-| Watermark text/custom | ⛔ | butuh font + Pango; sengaja belum |
-| Watermark shadow/rotate | ⛔ | `wmsh`/`wmr` belum; rotasi gambar watermark perlu affine |
+| Watermark text | ✅ | `wmt_`/`watermark_text_`: URL-safe base64, dirender lokal dengan embedded Go Regular 16 pt hitam; Pango markup tidak diinterpretasi; tanpa fetch |
+| Watermark size | ✅ | `wms_`/`watermark_size_`: `width:height`, fit + enlarge, satu sisi `0` diturunkan dari rasio |
+| Watermark shadow/rotate | ✅ | `wmsh_` (alpha blur + shadow hitam offset) dan `wmr_`/`wm_rot` (rotasi searah jarum jam, anti-aliased); keduanya di compositing bersama |
 | Blur, sharpen, pixelate | ✅ | `blur`, `sharp`, `pixel`/`px` |
 | Unsharp masking | ✅ | `sharp` (approx.) |
 | Brightness/contrast/saturation | ✅ | `bri`, `con`, `sat`, baru |
@@ -229,7 +230,7 @@ Konsekuensinya untuk dokumen ini:
 
 ### Parity pack 4 — butuh pekerjaan lebih besar
 
-1. **Watermark** image/text + shadow/rotate (compositing, font, cache key).
+1. ~~**Watermark** image/text + shadow/rotate~~ — selesai.
 2. **Chained pipelines** (parser baru; cache key harus mencakup urutan).
 3. **Autoquality by size/DSSIM** (loop encode; CPU cost).
 4. **Smart crop/face** (detektor; vips attention sudah sebagian).

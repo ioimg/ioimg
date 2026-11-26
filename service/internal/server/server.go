@@ -564,14 +564,17 @@ func (s *Server) render(ctx context.Context, t Target, format ops.Format) ([]byt
 
 	opts := imaging.Options{OutFormat: format, Quality: t.Ops.Quality}
 	if t.Ops.Watermark != nil {
-		wmURL := t.Ops.WatermarkURL
-		if wmURL == "" {
-			wmURL = s.cfg.WatermarkURL
+		wmURL := ""
+		if t.Ops.WatermarkText == "" {
+			wmURL = t.Ops.WatermarkURL
+			if wmURL == "" {
+				wmURL = s.cfg.WatermarkURL
+			}
+			if wmURL == "" {
+				return nil, timings, errWatermarkMissing()
+			}
 		}
-		if wmURL == "" {
-			return nil, timings, errWatermarkMissing()
-		}
-		wm, wmErr := s.watermarkFor(ctx, wmURL)
+		wm, wmErr := s.watermarkFor(ctx, t.Ops.WatermarkText, wmURL)
 		if wmErr != nil {
 			s.log.Warn("watermark unavailable", "error", wmErr)
 			return nil, timings, errWatermarkMissing()

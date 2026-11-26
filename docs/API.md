@@ -97,6 +97,10 @@ Format: `nama_nilai`. Nilai numerik tanpa satuan (piksel). Beberapa parameter me
 | `gr` | gradient | `opacity:color:direction:start:stop` (0..1; hex; `down`/`up`/`right`/`left` atau derajat; 0..1) | `1:000:down:0:1` | Overlay transparan→warna. `0` = atas transparan, `90` = kanan transparan (searah jarum jam). Opacity 0 = mati. Fitur **Pro** imgproxy |
 | `wm` | watermark gambar | `opacity:position:x_offset:y_offset:scale` (semua opsional) | nonaktif | `position`: `ce/no/so/ea/we/noea/nowe/soea/sowe/re/ch`. Offset `|v|>=1` = piksel, `<1` = fraksi dimensi. `scale` = lebar watermark relatif hasil. Fitur **Pro** imgproxy |
 | `wmu` | URL gambar watermark | URL-safe base64 dari URL absolut | `IOIMG_WATERMARK_URL` | Dipakai bila `wm_` ada; fallback ke env. Lewat SSRF guard; error `422 watermark_unavailable` bila tidak bisa dimuat. Fitur **Pro** imgproxy |
+| `wmt` | teks watermark | URL-safe base64 teks | — | Dirender lokal (font Go Regular 16 pt, hitam) dan dipakai sebagai gambar watermark; tidak ada fetch. `wmt_` sendiri mengaktifkan watermark, `wm_0` mematikannya. **Pango markup tidak diinterpretasi**: teks digambar apa adanya. Alias `watermark_text`. Fitur **Pro** imgproxy |
+| `wms` | ukuran watermark | `width:height`, salah satu boleh `0` (minimal satu > 0) | ukuran asli | Fit di dalam kotak sambil mempertahankan rasio; watermark kecil ikut diperbesar. Sisi `0` diturunkan dari rasio watermark. Alias `watermark_size`. Fitur **Pro** imgproxy |
+| `wmr` | rotasi watermark | derajat, dinormalkan ke `[0,360)` | `0` | Rotasi searah jarum jam, anti-aliased, alpha dipertahankan. Alias `wm_rot`/`watermark_rotate`. Fitur **Pro** imgproxy |
+| `wmsh` | shadow watermark | sigma >= 0 | `0` | Alpha watermark di-blur sebesar sigma, shadow hitam digeser ke kanan-bawah sebesar `sigma/2` (dibulatkan), lalu dikomposit di bawah watermark. Alias `watermark_shadow`. Fitur **Pro** imgproxy |
 | `hs` | verifikasi hashsum sumber | `hashsum_type:hashsum` (`none`/`md5`/`sha1`/`sha256`/`sha512`) | `none` | Dibandingkan sebelum decode; tidak cocok → `422 hashsum_mismatch`. Fitur **Pro** imgproxy |
 | `fiu` | fallback image URL | URL-safe base64 dari URL absolut | — | Dipakai saat sumber gagal di-fetch atau tidak bisa di-decode; fallback ikut allowlist/SSRF guard. Respons diberi `X-IOIMG-Fallback: 1`. Fitur **Pro** imgproxy |
 | `dpi` | DPI metadata | angka > 0 (0 = tidak diubah) | `0` | Ditulis ke JFIF density (JPEG) atau `pHYs` (PNG) setelah encode; format lain tidak punya field density. Fitur **Pro** imgproxy |
@@ -110,6 +114,11 @@ Urutan pipeline bentuk: **resize → extend → flatten → effects → watermar
 encode**. `ex` memperluas hasil resize ke kanvas yang diminta, lalu `fl`
 mengomposit hasilnya ke `bg`; keduanya terjadi sebelum efek warna, watermark,
 dan encoding.
+
+Watermark (`wm_`/`wmt_`/`wmu_` + `wms`/`wmr`/`wmsh`) dijalankan setelah
+efek warna dan sebelum opacity watermark diterapkan. `wmt_` dirender di proses
+yang sama dengan compositing, jadi tidak pernah memanggil fetcher; `wmu_` dan
+`IOIMG_WATERMARK_URL` tetap melalui SSRF guard.
 
 `dt` dan `col` dijalankan berurutan (colorize lalu duotone) setelah resize dan
 adjust; keduanya masuk canonical form (dan karena itu cache key + signature)

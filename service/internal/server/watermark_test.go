@@ -63,3 +63,48 @@ func TestWatermarkDefaultFromConfig(t *testing.T) {
 		t.Fatalf("default watermark: %d", resp.StatusCode)
 	}
 }
+
+// TestWatermarkTextNeverFetches proves wmt_ is rendered locally: even with a
+// configured default watermark URL, the request must fetch the source only.
+func TestWatermarkTextNeverFetches(t *testing.T) {
+	h := newHarness(t, nil)
+	h.server.cfg.WatermarkURL = h.origin.URL + "/configured-watermark.png"
+	enc := base64.RawURLEncoding.EncodeToString([]byte("hello"))
+	source := h.origin.URL + "/photo.jpg?wmtext=1"
+
+	plainResp := h.get(t, "/w_64,f_png/"+source, nil)
+	plain := []byte(readBody(t, plainResp))
+	if plainResp.StatusCode != http.StatusOK {
+		t.Fatalf("plain: %d", plainResp.StatusCode)
+	}
+
+	before := h.hits.Load()
+	resp := h.get(t, "/w_64,f_png,wmt_"+enc+"/"+source, nil)
+	body := []byte(readBody(t, resp))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("text watermark: %d", resp.StatusCode)
+	}
+	if got := h.hits.Load() - before; got != 1 {
+		t.Fatalf("wmt_ caused %d source/watermark fetches, want 1 (source only)", got)
+	}
+	if bytes.Equal(plain, body) {
+		t.Fatal("wmt_ did not change the rendered image")
+	}
+}
+
+// TestWatermarkQueryForm accepts the text/size/rotate/shadow options in the
+// query transport as well as the comma-separated path transport.
+func TestWatermarkQueryForm(t *testing.T) {
+	h := newHarness(t, nil)
+	enc := base64.RawURLEncoding.EncodeToString([]byte("query"))
+	for _, key := range []string{"wmt", "watermark_text"} {
+		source := h.origin.URL + "/photo.jpg?" + key + "=1"
+		path := "/img?src=" + urlQueryEscape(source) + "&w=64&f=png&" + key + "=" + enc +
+			"&wms=30:30&wmr=45&wmsh=1"
+		resp := h.get(t, path, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s query: %d", key, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}

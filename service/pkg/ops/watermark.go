@@ -1,7 +1,9 @@
 package ops
 
 import (
+	"encoding/base64"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -36,6 +38,12 @@ type Watermark struct {
 	XOffset  float64 // |v| >= 1 = pixels, otherwise a fraction of the image
 	YOffset  float64
 	Scale    float64 // watermark width relative to the result; 0 = native size
+	// Size is the explicit wms_ fit size; nil keeps the native size.
+	Size *Size
+	// Rotate is the clockwise wmr_ rotation in degrees.
+	Rotate float64
+	// Shadow is the wmsh_ alpha-blur sigma; 0 disables the shadow.
+	Shadow float64
 }
 
 func (w Watermark) canonical() string {
@@ -100,4 +108,74 @@ func DecodeWatermarkURL(v string) (string, error) {
 		return "", fmt.Errorf("wmu must encode an absolute http(s) URL")
 	}
 	return u, nil
+}
+
+// Size is an explicit watermark size (imgproxy wms_). A zero side is derived
+// from the watermark's aspect ratio; both sides zero is invalid.
+type Size struct {
+	Width  int
+	Height int
+}
+
+func (s Size) canonical() string {
+	return strconv.Itoa(s.Width) + ":" + strconv.Itoa(s.Height)
+}
+
+func parseWatermarkSize(v string) (Size, error) {
+	parts := strings.Split(v, ":")
+	if len(parts) != 2 {
+		return Size{}, fmt.Errorf("wms takes width:height")
+	}
+	parse := func(side string) (int, error) {
+		n, err := strconv.Atoi(side)
+		if err != nil || n < 0 || n > MaxDimension {
+			return 0, fmt.Errorf("wms sides must be integers between 0 and %d", MaxDimension)
+		}
+		return n, nil
+	}
+	w, err := parse(parts[0])
+	if err != nil {
+		return Size{}, err
+	}
+	h, err := parse(parts[1])
+	if err != nil {
+		return Size{}, err
+	}
+	if w == 0 && h == 0 {
+		return Size{}, fmt.Errorf("wms requires at least one non-zero side")
+	}
+	return Size{Width: w, Height: h}, nil
+}
+
+// DecodeWatermarkText decodes wmt_: URL-safe base64 text. The text is rendered
+// as plain text; Pango markup is not interpreted.
+func DecodeWatermarkText(v string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(v, "="))
+	if err != nil {
+		return "", fmt.Errorf("wmt must be URL-safe base64 text")
+	}
+	return string(raw), nil
+}
+
+func parseWatermarkRotate(v string) (float64, error) {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("wmr must be a finite number of degrees")
+	}
+	f = math.Mod(f, 360)
+	if f < 0 {
+		f += 360
+	}
+	if f == 0 {
+		f = 0 // normalise -0
+	}
+	return f, nil
+}
+
+func parseWatermarkShadow(v string) (float64, error) {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
+		return 0, fmt.Errorf("wmsh must be a non-negative finite number")
+	}
+	return f, nil
 }

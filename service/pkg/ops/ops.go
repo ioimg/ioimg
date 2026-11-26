@@ -133,6 +133,18 @@ type Ops struct {
 	Watermark *Watermark
 	// WatermarkURL is the per-request watermark image (imgproxy wmu_).
 	WatermarkURL string
+	// WatermarkText is the decoded wmt_ text rendered as the watermark image.
+	// An empty string means no text watermark.
+	WatermarkText string
+	// WatermarkSize is the desired watermark size (imgproxy wms_). Zero on one
+	// side derives that side from the watermark's aspect ratio.
+	WatermarkSize *Size
+	// WatermarkRotate rotates the watermark clockwise, in degrees (imgproxy wmr_).
+	WatermarkRotate float64
+	// WatermarkShadow blurs the watermark alpha into a shadow underneath it
+	// (imgproxy wmsh_). Zero disables it.
+	WatermarkShadow float64
+	watermarkSet    bool // wm_ was explicitly present (wm_0 disables text setups)
 	// DPI sets the density metadata of the encoded image (imgproxy dpi_). It
 	// never changes pixels, so it is part of the cache key only because the
 	// encoded bytes differ.
@@ -279,6 +291,12 @@ func splitPairs(raw string) ([]pair, error) {
 		}
 		if strings.HasPrefix(lower, "background_alpha_") {
 			out = append(out, pair{key: "background_alpha", value: part[len("background_alpha_"):]})
+			continue
+		}
+		// Watermark options are the exception to the first-underscore split:
+		// their long names (and wm_rot) contain an underscore themselves.
+		if k, v, ok := splitLongOption(lower, part); ok {
+			out = append(out, pair{key: k, value: v})
 			continue
 		}
 		k, v, ok := strings.Cut(part, "_")
@@ -490,12 +508,37 @@ func (o *Ops) set(key, value string) error {
 		if w.Opacity > 0 {
 			o.Watermark = &w
 		}
+		o.watermarkSet = true
 	case "wmu", "watermark_url":
 		u, err := DecodeWatermarkURL(value)
 		if err != nil {
 			return err
 		}
 		o.WatermarkURL = u
+	case "wmt", "watermark_text":
+		t, err := DecodeWatermarkText(value)
+		if err != nil {
+			return err
+		}
+		o.WatermarkText = t
+	case "wms", "watermark_size":
+		sz, err := parseWatermarkSize(value)
+		if err != nil {
+			return err
+		}
+		o.WatermarkSize = &sz
+	case "wmr", "wm_rot", "watermark_rotate":
+		f, err := parseWatermarkRotate(value)
+		if err != nil {
+			return err
+		}
+		o.WatermarkRotate = f
+	case "wmsh", "watermark_shadow":
+		f, err := parseWatermarkShadow(value)
+		if err != nil {
+			return err
+		}
+		o.WatermarkShadow = f
 	case "dpi":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil || f < 0 || f > 100000 {
@@ -639,6 +682,17 @@ func (o *Ops) set(key, value string) error {
 }
 
 func (o *Ops) validate() error {
+	// wmt_ alone is a complete watermark setup: unlike wmu_, text needs no
+	// image URL, so it activates the default placement. An explicit wm_0 still
+	// disables it.
+	if o.WatermarkText != "" && o.Watermark == nil && !o.watermarkSet {
+		o.Watermark = &Watermark{Opacity: 1, Position: WatermarkCenter}
+	}
+	if o.Watermark != nil {
+		o.Watermark.Size = o.WatermarkSize
+		o.Watermark.Rotate = o.WatermarkRotate
+		o.Watermark.Shadow = o.WatermarkShadow
+	}
 	if o.WidthAuto && o.HeightAuto {
 		return fmt.Errorf("w_auto and h_auto cannot be combined")
 	}
@@ -712,6 +766,25 @@ var skipExtensions = map[string]bool{
 }
 
 func isSkipExtension(s string) bool { return skipExtensions[strings.ToLower(s)] }
+
+// splitLongOption maps imgproxy's long watermark names (and the wm_rot alias)
+// onto their canonical short keys. The lower-cased form is used for matching,
+// the original string supplies the value so base64 text is never altered.
+func splitLongOption(lower, original string) (key, value string, ok bool) {
+	for _, p := range [...]struct{ prefix, key string }{
+		{"watermark_text_", "wmt"},
+		{"watermark_size_", "wms"},
+		{"watermark_rotate_", "wmr"},
+		{"watermark_shadow_", "wmsh"},
+		{"watermark_url_", "wmu"},
+		{"wm_rot_", "wmr"},
+	} {
+		if strings.HasPrefix(lower, p.prefix) {
+			return p.key, original[len(p.prefix):], true
+		}
+	}
+	return "", "", false
+}
 
 // parseSkipProcessing accepts a colon- or comma-separated extension list and
 // returns it lowercased, deduplicated and sorted so the canonical form is
@@ -936,6 +1009,18 @@ func (o Ops) Canonical() string {
 	}
 	if o.WatermarkURL != "" {
 		add("wmu", base64.RawURLEncoding.EncodeToString([]byte(o.WatermarkURL)))
+	}
+	if o.WatermarkText != "" {
+		add("wmt", base64.RawURLEncoding.EncodeToString([]byte(o.WatermarkText)))
+	}
+	if o.WatermarkSize != nil {
+		add("wms", o.WatermarkSize.canonical())
+	}
+	if o.WatermarkRotate != 0 {
+		add("wmr", trimFloat(o.WatermarkRotate))
+	}
+	if o.WatermarkShadow != 0 {
+		add("wmsh", trimFloat(o.WatermarkShadow))
 	}
 	if o.DPI > 0 {
 		add("dpi", trimFloat(o.DPI))

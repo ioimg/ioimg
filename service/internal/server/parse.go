@@ -87,7 +87,13 @@ func parseQueryTarget(r *http.Request, p *tenant.Policy) (Target, error) {
 		return Target{}, errInvalidSource()
 	}
 	var parts []string
-	order := []string{"w", "h", "c", "g", "f", "q", "dpr", "bg", "blur", "sharp", "rot", "flip", "trim", "strip", "enlarge", "palette", "skp", "skip_processing", "raw", "t"}
+	order := []string{
+		"w", "h", "c", "g", "f", "q", "dpr", "bg", "blur", "sharp", "rot", "flip",
+		"trim", "strip", "enlarge", "palette", "skp", "skip_processing", "raw", "t",
+		"wm", "watermark", "wmu", "watermark_url",
+		"wmt", "watermark_text", "wms", "watermark_size",
+		"wmr", "wm_rot", "watermark_rotate", "wmsh", "watermark_shadow",
+	}
 	for _, k := range order {
 		if v := q.Get(k); v != "" {
 			parts = append(parts, k+"_"+v)
